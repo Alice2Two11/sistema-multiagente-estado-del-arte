@@ -1,0 +1,114 @@
+{
+  "handoff_context": {
+    "claim_id": "S2_C4",
+    "section_id": "S2",
+    "original_claim_text": "Este modelo alcanzó un coeficiente de correlación R de 0.96 y un error cuadrático medio (RMSE) de 1.34 MJ·m−2 con una configuración óptima de siete neuronas en la capa oculta",
+    "authorized_source_filenames": [
+      "1/33.An-LM-BP-Neural-Network-Approach-to-Estimate-Monthly-Mean-Daily-Global-Solar-Radiation-Using-MODIS-Atmospheric-Products.pdf",
+      "1/34.praynlin2017.pdf",
+      "1/38.MTP2018.pdf",
+      "1/39.MLP_Back_Propagation_Artificial_Neural_Network_for.pdf"
+    ],
+    "eligible_evidence": [
+      {
+        "evidence_id": "42891eb1891ec233_chunk_0022",
+        "source_filename": "1/33.An-LM-BP-Neural-Network-Approach-to-Estimate-Monthly-Mean-Daily-Global-Solar-Radiation-Using-MODIS-Atmospheric-Products.pdf",
+        "chunk_id": "42891eb1891ec233_chunk_0022",
+        "text": "a is a the constant, and 1 < a < 10. Different numbers of neurons in the hidden layer were tested in order to select a relatively optimized network structure. After training, a comparison was performed between simulated M-GSR and observed ones at the training sites. R, RMSE and MBE were used as error metrics for comparison; these statistics are deﬁned as follows: R = ∑N i=1(xi −x)(yi −y) q ∑N i=1(xi −x)2q ∑N i=1(yi −y)2 (4) RMSE = q ∑ N i=1 (H e−Hm)2/N (5) MBE =∑ N i=1(H e−Hm)/N (6) where He the estimated M-GSR, and Hm the measured M-GSR, and N the number of samples. If RMSE and MBE are smaller, the simulation precision is higher. The performance of the number of neurons in hidden layer is shown in Table 1. When the ANN conﬁguration is with 7 neurons in the hidden layer, the value of RMSE is the smallest and the value of R is optimal (RMSE = 1.34 MJ·m−2, with R = 0.96). MBE is minimum (equal to 0.12 MJ·m−2) when the ANN conﬁguration with 5 neurons in the hidden layer. It is indicated that the training results were hardly improved further when the number of neurons in the hidden layer became greater than 7. The more the number of",
+        "usage_role": "ELIGIBLE",
+        "authorized_for_section": true
+      }
+    ],
+    "supporting_citations": [
+      "[1/33.An-LM-BP-Neural-Network-Approach-to-Estimate-Monthly-Mean-Daily-Global-Solar-Radiation-Using-MODIS-Atmospheric-Products.pdf | 42891eb1891ec233_chunk_0022]"
+    ],
+    "field_provenance": {
+      "claim_id": "state_of_art_draft.json:sections[].claims",
+      "claim_id_origin": "committed Agent06 inventory",
+      "section_id": "state_of_art_draft.json:sections[].section_id",
+      "section_title": "state_of_art_draft.json:sections[].section_title",
+      "original_claim_text": "state_of_art_draft.json:sections[].claims",
+      "supporting_citations": "state_of_art_draft.json:sections[].claims[].supporting_citations",
+      "source_free_organizational_section": "state_of_art_draft.json:section_validation",
+      "section_text": "draft_sections.csv|state_of_art_draft.json",
+      "claim_span_in_section": "explicit artifact coordinates|unique exact location",
+      "eligible_evidence": "draft_claim_evidence.csv|draft_rag_evidence.csv + outline_paper_mapping.csv authorization",
+      "authorized_source_filenames": "outline_paper_mapping.csv",
+      "numeric_risk": "numeric_hallucination_check.csv",
+      "source_draft_fingerprint": "draft_generation_manifest.json|canonical draft fingerprint"
+    },
+    "claim_id_origin": "committed Agent06 inventory",
+    "section_title": "Modelos basados en Redes Neuronales Artificiales (ANN) para pronóstico de irradiancia solar",
+    "source_free_organizational_section": false,
+    "numeric_risk_status": "EVALUATED",
+    "numeric_risk": "LOW"
+  },
+  "retrieved_candidates": [
+    {
+      "source_filename": "1/33.An-LM-BP-Neural-Network-Approach-to-Estimate-Monthly-Mean-Daily-Global-Solar-Radiation-Using-MODIS-Atmospheric-Products.pdf",
+      "chunk_id": "42891eb1891ec233_chunk_0022",
+      "text": "a is a the constant, and 1 < a < 10. Different numbers of neurons in the hidden layer were tested\nin order to select a relatively optimized network structure. After training, a comparison was\nperformed between simulated M-GSR and observed ones at the training sites. R, RMSE and MBE\nwere used as error metrics for comparison; these statistics are deﬁned as follows:\nR =\n∑N\ni=1(xi −x)(yi −y)\nq\n∑N\ni=1(xi −x)2q\n∑N\ni=1(yi −y)2\n(4)\nRMSE =\nq\n∑\nN\ni=1 (H e−Hm)2/N\n(5)\nMBE =∑\nN\ni=1(H e−Hm)/N\n(6)\nwhere He the estimated M-GSR, and Hm the measured M-GSR, and N the number of samples. If\nRMSE and MBE are smaller, the simulation precision is higher. The performance of the number of\nneurons in hidden layer is shown in Table 1. When the ANN conﬁguration is with 7 neurons in the\nhidden layer, the value of RMSE is the smallest and the value of R is optimal (RMSE = 1.34 MJ·m−2,\nwith R = 0.96). MBE is minimum (equal to 0.12 MJ·m−2) when the ANN conﬁguration with 5\nneurons in the hidden layer. It is indicated that the training results were hardly improved further\nwhen the number of neurons in the hidden layer became greater than 7. The more the number of",
+      "retrieval_sources": [
+        "chroma"
+      ],
+      "query_ids": [
+        "S2_C4"
+      ],
+      "all_native_ranks": [
+        5
+      ],
+      "native_ranks_by_retriever": {
+        "chroma": 5
+      },
+      "native_scores_by_retriever": {
+        "chroma": 0.47962069511413574
+      },
+      "native_score_types_by_retriever": {
+        "chroma": "cosine_similarity"
+      },
+      "first_seen_round": 1,
+      "last_seen_round": 1,
+      "fused_rrf_score": 0.015384615384615385,
+      "text_variants": [],
+      "contradiction_signals": [],
+      "evidence_id": "1/33.An-LM-BP-Neural-Network-Approach-to-Estimate-Monthly-Mean-Daily-Global-Solar-Radiation-Using-MODIS-Atmospheric-Products.pdf::42891eb1891ec233_chunk_0022",
+      "canonical_text": "a is a the constant, and 1 < a < 10. Different numbers of neurons in the hidden layer were tested\nin order to select a relatively optimized network structure. After training, a comparison was\nperformed between simulated M-GSR and observed ones at the training sites. R, RMSE and MBE\nwere used as error metrics for comparison; these statistics are deﬁned as follows:\nR =\n∑N\ni=1(xi −x)(yi −y)\nq\n∑N\ni=1(xi −x)2q\n∑N\ni=1(yi −y)2\n(4)\nRMSE =\nq\n∑\nN\ni=1 (H e−Hm)2/N\n(5)\nMBE =∑\nN\ni=1(H e−Hm)/N\n(6)\nwhere He the estimated M-GSR, and Hm the measured M-GSR, and N the number of samples. If\nRMSE and MBE are smaller, the simulation precision is higher. The performance of the number of\nneurons in hidden layer is shown in Table 1. When the ANN conﬁguration is with 7 neurons in the\nhidden layer, the value of RMSE is the smallest and the value of R is optimal (RMSE = 1.34 MJ·m−2,\nwith R = 0.96). MBE is minimum (equal to 0.12 MJ·m−2) when the ANN conﬁguration with 5\nneurons in the hidden layer. It is indicated that the training results were hardly improved further\nwhen the number of neurons in the hidden layer became greater than 7. The more the number of",
+      "authorized_for_section": true,
+      "retrieval_origin": "AGENT07_INDEPENDENT_RAG",
+      "usage_role": "SUPPORT"
+    },
+    {
+      "source_filename": "1/33.An-LM-BP-Neural-Network-Approach-to-Estimate-Monthly-Mean-Daily-Global-Solar-Radiation-Using-MODIS-Atmospheric-Products.pdf",
+      "chunk_id": "42891eb1891ec233_chunk_0023",
+      "text": "with R = 0.96). MBE is minimum (equal to 0.12 MJ·m−2) when the ANN conﬁguration with 5\nneurons in the hidden layer. It is indicated that the training results were hardly improved further\nwhen the number of neurons in the hidden layer became greater than 7. The more the number of\nneurons, the not higher the accuracy. The reason is that the more the number of hidden layers,\nthe more the nodes, which leads to more weights and errors, hence, the accuracy of the network\ndrops. From the above consideration, an ANN conﬁguration with 7 neurons was applied.\nTable 1. Training results for different conﬁgurations in the hidden layer.\nn\nTransfer Function\nTraining Function\nR\nRMSE/\nMJ·m−2\nMBE/\nMJ·m−2\nHidden Layer\nOutput Layer\n4\ntan-sigmoid\npurelin\ntrainlm\n0.94\n1.59\n0.13\n5\ntan-sigmoid\npurelin\ntrainlm\n0.93\n1.66\n0.12\n6\ntan-sigmoid\npurelin\ntrainlm\n0.94\n1.60\n0.44\n7\ntan-sigmoid\npurelin\ntrainlm\n0.96\n1.34\n0.21\n8\ntan-sigmoid\npurelin\ntrainlm\n0.93\n1.65\n0.27\n9\ntan-sigmoid\npurelin\ntrainlm\n0.92\n2.12\n1.15\n10\ntan-sigmoid\npurelin\ntrainlm\n0.94\n1.66\n0.52\n11\ntan-sigmoid\npurelin\ntrainlm\n0.90\n1.99\n0.42\n12\ntan-sigmoid\npurelin\ntrainlm\n0.92\n1.76\n0.19\n13\ntan-sigmoid\npurelin\ntrainlm\n0.93\n1.73\n0.20",
+      "retrieval_sources": [
+        "chroma"
+      ],
+      "query_ids": [
+        "S2_C4"
+      ],
+      "all_native_ranks": [
+        8
+      ],
+      "native_ranks_by_retriever": {
+        "chroma": 8
+      },
+      "native_scores_by_retriever": {
+        "chroma": 0.44929981231689453
+      },
+      "native_score_types_by_retriever": {
+        "chroma": "cosine_similarity"
+      },
+      "first_seen_round": 1,
+      "last_seen_round": 1,
+      "fused_rrf_score": 0.014705882352941176,
+      "text_variants": [],
+      "contradiction_signals": [],
+      "evidence_id": "1/33.An-LM-BP-Neural-Network-Approach-to-Estimate-Monthly-Mean-Daily-Global-Solar-Radiation-Using-MODIS-Atmospheric-Products.pdf::42891eb1891ec233_chunk_0023",
+      "canonical_text": "with R = 0.96). MBE is minimum (equal to 0.12 MJ·m−2) when the ANN conﬁguration with 5\nneurons in the hidden layer. It is indicated that the training results were hardly improved further\nwhen the number of neurons in the hidden layer became greater than 7. The more the number of\nneurons, the not higher the accuracy. The reason is that the more the number of hidden layers,\nthe more the nodes, which leads to more weights and errors, hence, the accuracy of the network\ndrops. From the above consideration, an ANN conﬁguration with 7 neurons was applied.\nTable 1. Training results for different conﬁgurations in the hidden layer.\nn\nTransfer Function\nTraining Function\nR\nRMSE/\nMJ·m−2\nMBE/\nMJ·m−2\nHidden Layer\nOutput Layer\n4\ntan-sigmoid\npurelin\ntrainlm\n0.94\n1.59\n0.13\n5\ntan-sigmoid\npurelin\ntrainlm\n0.93\n1.66\n0.12\n6\ntan-sigmoid\npurelin\ntrainlm\n0.94\n1.60\n0.44\n7\ntan-sigmoid\npurelin\ntrainlm\n0.96\n1.34\n0.21\n8\ntan-sigmoid\npurelin\ntrainlm\n0.93\n1.65\n0.27\n9\ntan-sigmoid\npurelin\ntrainlm\n0.92\n2.12\n1.15\n10\ntan-sigmoid\npurelin\ntrainlm\n0.94\n1.66\n0.52\n11\ntan-sigmoid\npurelin\ntrainlm\n0.90\n1.99\n0.42\n12\ntan-sigmoid\npurelin\ntrainlm\n0.92\n1.76\n0.19\n13\ntan-sigmoid\npurelin\ntrainlm\n0.93\n1.73\n0.20",
+      "authorized_for_section": true,
+      "retrieval_origin": "AGENT07_INDEPENDENT_RAG",
+      "usage_role": "SUPPORT"
+    }
+  ]
+}
