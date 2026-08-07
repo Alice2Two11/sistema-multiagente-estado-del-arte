@@ -1,0 +1,163 @@
+from __future__ import annotations
+import re
+from .retrieval import safe_str
+from .normalization import CITATION_RE, split_sentences_preserving_citations, is_substantive_sentence, normalize_claim_text
+from .prompting import assign_section_budgets
+
+
+def count_words(text):
+    return len(re.findall(r"\b[\wáéíóúüñ]+\b", safe_str(text), flags=re.IGNORECASE))
+
+
+def number_exists_in_text(value, text):
+    token = safe_str(value).replace(",", ".")
+    return token in safe_str(text).replace(",", ".")
+
+
+def validate_generated_section(generated, section, evidence):
+    errors = []
+    citation_errors = []
+    claim_errors = []
+    numeric_errors = []
+    allowed = {(r["source_filename"], r["chunk_id"]): r.get("text", "") for r in evidence}
+    if not isinstance(generated, dict):
+        return {"validation_ok": False, "errors": ["section_output_not_object"], "citation_errors": [], "claim_errors": [], "numeric_errors": [], "valid_citation_count": 0, "substantive_sentence_count": 0}
+    if safe_str(generated.get("section_id")) != safe_str(section.get("section_id")):
+        errors.append("SECTION_ID_MISMATCH")
+    if not safe_str(generated.get("section_title")):
+        errors.append("MISSING_SECTION_TITLE")
+    text = safe_str(generated.get("draft_text"))
+    claims = generated.get("claims")
+    if not text:
+        errors.append("EMPTY_DRAFT_TEXT")
+    if not isinstance(claims, list):
+        errors.append("INVALID_CLAIMS")
+        claims = []
+    sentences = split_sentences_preserving_citations(text)
+    substantive = [s for s in sentences if is_substantive_sentence(s)]
+    claim_map = {}
+    for claim in claims:
+        if not isinstance(claim, dict):
+            claim_errors.append("claim_not_object")
+            continue
+        key = normalize_claim_text(claim.get("claim"))
+        if not key:
+            claim_errors.append("empty_claim")
+            continue
+        if key in claim_map:
+            claim_errors.append("duplicate_claim_text")
+        claim_map[key] = claim
+    for sentence in substantive:
+        pairs = [(a.strip(), b.strip()) for a, b in CITATION_RE.findall(sentence)]
+        if not pairs:
+            citation_errors.append("uncited_substantive_sentence")
+        for pair in pairs:
+            if pair not in allowed:
+                citation_errors.append("invalid_citation")
+        claim = claim_map.get(normalize_claim_text(sentence))
+        if not claim:
+            claim_errors.append("missing_claim_for_sentence")
+            continue
+        claim_pairs = []
+        for value in claim.get("supporting_citations") or []:
+            match = CITATION_RE.fullmatch(safe_str(value))
+            if match:
+                claim_pairs.append((match.group(1).strip(), match.group(2).strip()))
+        if set(claim_pairs) != set(pairs):
+            claim_errors.append("claim_citation_mismatch")
+        for number in re.findall(r"(?<!\w)[+-]?\d+(?:[.,]\d+)?%?", normalize_claim_text(sentence)):
+            if not any(number_exists_in_text(number, allowed.get(pair, "")) for pair in pairs):
+                numeric_errors.append(f"UNSUPPORTED_NUMERIC_VALUE:{number}")
+    all_errors = errors + citation_errors + claim_errors
+    return {
+        "validation_ok": not all_errors and not numeric_errors,
+        "errors": sorted(set(errors)),
+        "citation_errors": sorted(set(citation_errors)),
+        "claim_errors": sorted(set(claim_errors)),
+        "numeric_errors": sorted(set(numeric_errors)),
+        "valid_citation_count": sum(1 for s in sentences for pair in CITATION_RE.findall(s) if (pair[0].strip(), pair[1].strip()) in allowed),
+        "substantive_sentence_count": len(substantive),
+    }
+
+
+def section_allows_no_sources(section):
+    text = (safe_str(section.get("section_type")) + " " + safe_str(section.get("section_title"))).casefold()
+    return any(term in text for term in ("introducción", "introduccion", "introduction", "conclusión", "conclusion", "conclusiones", "conclusions", "cierre"))
+
+
+def build_draft_reports(sections, outline_sections, evidence_map, policy):
+    budgets = policy.get("section_budgets") or assign_section_budgets(outline_sections, policy.get("target_total_words", 1000))
+    quality_rows = []
+    section_rows = []
+    claim_evidence_rows = []
+    numeric_rows = []
+    sections_without_valid_citations = []
+    sections_with_low_citation_density = []
+    sections_with_claim_support_errors = []
+    sections_with_quantitative_support_errors = []
+    invalid_citation_count = 0
+    for section in sections:
+        sid = safe_str(section.get("section_id"))
+        title = safe_str(section.get("section_title"))
+        text = safe_str(section.get("draft_text"))
+        evidence = evidence_map.get(sid, [])
+        outline = next((item for item in outline_sections if safe_str(item.get("section_id")) == sid), {"section_id": sid})
+        validation = section.get("section_validation") or validate_generated_section(section, outline, evidence)
+        claims = section.get("claims") if isinstance(section.get("claims"), list) else []
+        citation_pairs = [(a.strip(), b.strip()) for a, b in CITATION_RE.findall(text)]
+        allowed_pairs = {(r["source_filename"], r["chunk_id"]) for r in evidence}
+        valid_pairs = [pair for pair in citation_pairs if pair in allowed_pairs]
+        invalid_pairs = [pair for pair in citation_pairs if pair not in allowed_pairs]
+        invalid_citation_count += len(invalid_pairs)
+        if evidence and not valid_pairs:
+            sections_without_valid_citations.append(sid)
+        substantive = [s for s in split_sentences_preserving_citations(text) if is_substantive_sentence(s)]
+        uncited = [s for s in substantive if not CITATION_RE.search(s)]
+        if evidence and uncited:
+            sections_with_low_citation_density.append({"section_id": sid, "uncited_sentences": uncited})
+        if validation.get("claim_errors"):
+            sections_with_claim_support_errors.append({"section_id": sid, "errors": validation["claim_errors"]})
+        if validation.get("numeric_errors"):
+            sections_with_quantitative_support_errors.append({"section_id": sid, "errors": validation["numeric_errors"]})
+        lookup = {(r["source_filename"], r["chunk_id"]): safe_str(r.get("text")) for r in evidence}
+        for idx, claim in enumerate(claims, start=1):
+            if not isinstance(claim, dict):
+                continue
+            claim_id = f"{sid}_C{idx}"
+            claim_text = safe_str(claim.get("claim"))
+            parsed = []
+            for citation in claim.get("supporting_citations") or []:
+                match = CITATION_RE.fullmatch(safe_str(citation))
+                if match:
+                    parsed.append((match.group(1).strip(), match.group(2).strip()))
+            for rank, pair in enumerate(parsed, start=1):
+                claim_evidence_rows.append({"section_id": sid, "claim_id": claim_id, "claim_text": claim_text, "source_filename": pair[0], "chunk_id": pair[1], "rank": rank, "retrieval_method": "supporting_citation_from_draft", "evidence_text": lookup.get(pair, "")[:int(policy.get("max_evidence_chars", 18000))], "allowed_for_section": pair in allowed_pairs})
+            for numeric_value in re.findall(r"(?<!\w)[+-]?\d+(?:[.,]\d+)?%?", claim_text):
+                found = [pair for pair in parsed if number_exists_in_text(numeric_value, lookup.get(pair, ""))]
+                numeric_rows.append({"section_id": sid, "claim_id": claim_id, "claim_text": claim_text, "numeric_value": numeric_value, "found_in_cited_chunks": bool(found), "matching_citations": "; ".join(f"[{a} | {b}]" for a, b in found), "risk": "none" if found else "high"})
+        word_count = count_words(text)
+        budget = budgets[sid]
+        source_free = bool((section.get("section_validation") or {}).get("source_free_organizational_section", False))
+        quality_rows.append({"section_id": sid, "section_title": title, "word_count": word_count, "source_free_organizational_section": source_free, "citation_count": len(citation_pairs), "valid_citation_count": len(valid_pairs), "invalid_citation_count": len(invalid_pairs), "claim_count": len(claims), "substantive_sentence_count": len(substantive), "uncited_substantive_sentence_count": len(uncited), "section_validation_ok": bool(validation.get("validation_ok"))})
+        section_rows.append({"section_id": sid, "section_title": title, "draft_text": text, "word_count": word_count, "target_words": budget["target_words"], "minimum_words": budget["minimum_words"], "maximum_words": budget["maximum_words"], "source_free_organizational_section": source_free, "within_section_range": True if source_free else budget["minimum_words"] <= word_count <= budget["maximum_words"], "citation_count": len(citation_pairs), "claim_count": len(claims)})
+    total_words = sum(row["word_count"] for row in section_rows)
+    source_free_count = sum(1 for row in section_rows if row["source_free_organizational_section"])
+    target_total = int(policy.get("target_total_words", 1000))
+    configured_min = int(policy.get("min_total_words", max(1, int(target_total * 0.65))))
+    max_total = int(policy.get("max_total_words", max(target_total, int(target_total * 1.4))))
+    effective_min = max(1, configured_min - source_free_count * max(0, int(target_total / max(len(sections), 1)) - 40))
+    global_length_valid = effective_min <= total_words <= max_total
+    all_section_validations_ok = all(bool(row["section_validation_ok"]) for row in quality_rows)
+    numeric_failures = sum(1 for row in numeric_rows if not row["found_in_cited_chunks"])
+    sections_outside_word_range = [row['section_id'] for row in section_rows if not row['within_section_range']]
+    validation_ok = all_section_validations_ok and invalid_citation_count == 0 and not sections_without_valid_citations and not sections_with_low_citation_density and not sections_with_claim_support_errors and not sections_with_quantitative_support_errors and numeric_failures == 0 and global_length_valid
+    report = {"validation_ok": validation_ok, "invalid_citation_count": invalid_citation_count, "sections_without_valid_citations": sections_without_valid_citations, "sections_with_low_citation_density": sections_with_low_citation_density, "sections_with_claim_support_errors": sections_with_claim_support_errors, "sections_with_quantitative_support_errors": sections_with_quantitative_support_errors, "numeric_failure_count": numeric_failures, "total_words": total_words, "target_total_words": target_total, "configured_min_total_words": configured_min, "effective_min_total_words": effective_min, "max_total_words": max_total, "source_free_organizational_section_count": source_free_count, "global_length_valid": global_length_valid, "section_count": len(sections), "all_section_validations_ok": all_section_validations_ok, "open_search_used": False, "ground_truth_used": False, "sections_outside_word_range": sections_outside_word_range}
+    return report, quality_rows, section_rows, claim_evidence_rows, numeric_rows
+
+
+def validate_draft_global(sections, outline_sections=None, evidence_map=None, policy=None):
+    if outline_sections is None or evidence_map is None or policy is None:
+        bad = [s.get("section_id") for s in sections if not (s.get("section_validation") or {}).get("validation_ok")]
+        return {"validation_ok": not bad, "invalid_sections": bad, "section_count": len(sections)}
+    report, _, _, _, _ = build_draft_reports(sections, outline_sections, evidence_map, policy)
+    return report
