@@ -1,0 +1,111 @@
+{
+  "validation_ok": true,
+  "invalid_citation_count": 0,
+  "sections_without_valid_citations": [],
+  "sections_with_low_citation_density": [],
+  "sections_with_claim_support_errors": [],
+  "sections_with_quantitative_support_errors": [],
+  "numeric_failure_count": 0,
+  "total_words": 126,
+  "target_total_words": 120,
+  "configured_min_total_words": 1,
+  "effective_min_total_words": 1,
+  "max_total_words": 1000,
+  "source_free_organizational_section_count": 1,
+  "global_length_valid": true,
+  "section_count": 4,
+  "all_section_validations_ok": true,
+  "open_search_used": false,
+  "ground_truth_used": false,
+  "sections_outside_word_range": [],
+  "stage": "06_agente_redactor",
+  "experiment_id": "exp_synthetic",
+  "validation_version": "legacy_notebook06_validation_v1",
+  "generation_attempts": {
+    "S0": [
+      {
+        "attempt": 0,
+        "mode": "deterministic_source_free_organizational_section",
+        "validation": {
+          "validation_ok": true,
+          "errors": [],
+          "citation_errors": [],
+          "claim_errors": [],
+          "numeric_errors": [],
+          "valid_citation_count": 0,
+          "substantive_sentence_count": 0,
+          "source_free_organizational_section": true
+        }
+      }
+    ],
+    "S1": [
+      {
+        "attempt": 1,
+        "validation": {
+          "validation_ok": true,
+          "errors": [],
+          "citation_errors": [],
+          "claim_errors": [],
+          "numeric_errors": [],
+          "valid_citation_count": 1,
+          "substantive_sentence_count": 1,
+          "original_errors": [],
+          "original_citation_errors": [],
+          "original_claim_errors": [],
+          "original_numeric_errors": [],
+          "original_validation_ok": true,
+          "normalized_validation_ok": true,
+          "normalization_repaired_output": false
+        },
+        "attempt_validation_path": "/tmp/tmp3nedao9m/exp_synthetic/05_outputs/05_draft/raw_section_outputs/S1_attempt_1_validation.json",
+        "rag_trace_path": "/tmp/tmp3nedao9m/exp_synthetic/05_outputs/05_draft/raw_section_outputs/S1_attempt_1_rag_trace.json"
+      }
+    ],
+    "S2": [
+      {
+        "attempt": 1,
+        "validation": {
+          "validation_ok": true,
+          "errors": [],
+          "citation_errors": [],
+          "claim_errors": [],
+          "numeric_errors": [],
+          "valid_citation_count": 1,
+          "substantive_sentence_count": 1,
+          "original_errors": [],
+          "original_citation_errors": [],
+          "original_claim_errors": [],
+          "original_numeric_errors": [],
+          "original_validation_ok": true,
+          "normalized_validation_ok": true,
+          "normalization_repaired_output": false
+        },
+        "attempt_validation_path": "/tmp/tmp3nedao9m/exp_synthetic/05_outputs/05_draft/raw_section_outputs/S2_attempt_1_validation.json",
+        "rag_trace_path": "/tmp/tmp3nedao9m/exp_synthetic/05_outputs/05_draft/raw_section_outputs/S2_attempt_1_rag_trace.json"
+      }
+    ],
+    "S3": [
+      {
+        "attempt": 1,
+        "validation": {
+          "validation_ok": true,
+          "errors": [],
+          "citation_errors": [],
+          "claim_errors": [],
+          "numeric_errors": [],
+          "valid_citation_count": 1,
+          "substantive_sentence_count": 1,
+          "original_errors": [],
+          "original_citation_errors": [],
+          "original_claim_errors": [],
+          "original_numeric_errors": [],
+          "original_validation_ok": true,
+          "normalized_validation_ok": true,
+          "normalization_repaired_output": false
+        },
+        "attempt_validation_path": "/tmp/tmp3nedao9m/exp_synthetic/05_outputs/05_draft/raw_section_outputs/S3_attempt_1_validation.json",
+        "rag_trace_path": "/tmp/tmp3nedao9m/exp_synthetic/05_outputs/05_draft/raw_section_outputs/S3_attempt_1_rag_trace.json"
+      }
+    ]
+  }
+}

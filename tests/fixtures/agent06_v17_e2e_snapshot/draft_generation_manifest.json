@@ -1,0 +1,27 @@
+{
+  "stage": "06_agente_redactor",
+  "experiment_id": "exp_synthetic",
+  "run_id": "run_synthetic",
+  "attempt_number": 1,
+  "fingerprint": "bb747ef12bce249096994f43babf973cd57414a77bd6b9f2a19c3f54ea69bb37",
+  "retrieval_strategy": "hybrid_chroma_csv_rrf_balanced",
+  "validation_ok": true,
+  "safety_policy": {
+    "uses_ground_truth": false,
+    "uses_external_knowledge": false,
+    "open_search_used": false
+  },
+  "counts": {
+    "sections": 4,
+    "llm_calls": 3,
+    "retrieval_rounds": 3
+  },
+  "versions": {
+    "stage": "06_AGENTIC_V17_HYBRID_QUANTITATIVE_SOURCE_AWARE",
+    "prompt": "legacy_notebook06_section_prompt_v1",
+    "rag": "hybrid_chroma_csv_rrf_balanced_v1",
+    "validation": "legacy_notebook06_validation_v1",
+    "quantitative_selection": "confirmed_literal_greedy_coverage_v1",
+    "budget": "source_aware_exact_total_v1"
+  }
+}

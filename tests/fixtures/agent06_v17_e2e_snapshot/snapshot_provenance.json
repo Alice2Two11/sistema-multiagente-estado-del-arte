@@ -1,0 +1,5 @@
+{
+  "source_test": "tests/v17/test_agent06_v17_end_to_end_integration.py::TestAgent06V17EndToEndIntegration.test_v17_approved_end_to_end_and_commit",
+  "llm_calls": 3,
+  "collection_query_calls": 6
+}

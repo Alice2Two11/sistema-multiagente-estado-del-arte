@@ -1,0 +1,5 @@
+section_id,section_title,word_count,source_free_organizational_section,citation_count,valid_citation_count,invalid_citation_count,claim_count,substantive_sentence_count,uncited_substantive_sentence_count,section_validation_ok
+S0,Introducción,33,True,0,0,0,0,2,2,True
+S1,Modelos predictivos,31,False,1,1,0,1,1,0,True
+S2,Errores de estimación,31,False,1,1,0,1,1,0,True
+S3,Comparación de rendimiento,31,False,1,1,0,1,1,0,True

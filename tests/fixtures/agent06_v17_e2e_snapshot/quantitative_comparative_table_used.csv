@@ -1,0 +1,5 @@
+source_filename,paper_title,model_or_method,metric,value,numeric_value,unit,dataset_or_case,evaluation_scope,data_resolution,condition,source_text_evidence,value_found_in_kb_text,value_found_in_source_chunk,source_chunk_scope,source_chunk_ids_checked,verification_status,raw_path,raw_value,row_id,chunk_id,method,dataset
+paper_a.pdf,,alpha,RMSE,1.3,,units,A,,synthetic,,,,True,,,confirmed_in_source_chunk,,,q1,a_quant,alpha,A
+paper_b.pdf,,beta,accuracy,95%,,,B,test,synthetic,test,,,True,,,confirmed_in_source_chunk,,,q2,b_quant,beta,B
+unauthorized.pdf,,,accuracy,99%,,,,,synthetic,,,,True,,,confirmed_in_source_chunk,,,q4,u1,,
+paper_a.pdf,,,accuracy,77%,,,,,synthetic,,,,True,,,confirmed_in_source_chunk,,,q5,missing,,

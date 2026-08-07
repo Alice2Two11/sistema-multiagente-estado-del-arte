@@ -1,0 +1,5 @@
+section_id,section_title,word_count,target_words,minimum_words,maximum_words,source_free_organizational_section,within_section_range,citation_count,claim_count
+S0,Introducción,33,20,1,40,True,True,0,0
+S1,Modelos predictivos,31,34,20,54,False,True,1,1
+S2,Errores de estimación,31,33,19,52,False,True,1,1
+S3,Comparación de rendimiento,31,33,19,52,False,True,1,1

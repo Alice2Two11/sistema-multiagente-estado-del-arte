@@ -1,0 +1,218 @@
+{
+  "identity": {
+    "experiment_id": "exp_synthetic",
+    "run_id": "run_synthetic",
+    "created_at": "2026-01-01T00:00:00Z",
+    "updated_at": "2026-07-27T16:56:27.909876+00:00",
+    "schema_version": "1.0"
+  },
+  "generation_config_snapshot": {},
+  "stages": {
+    "06_agente_redactor": {
+      "execution_status": "COMPLETED",
+      "quality_status": "APPROVED",
+      "attempts_used": 1,
+      "retrieval_rounds_used": 3,
+      "fingerprints": {
+        "input": "4ba36a8071feaae3f242fee7938fc1a9c347cec9cbaf8ea78879e7685a8e6f86",
+        "config": "d264c497c8a8871dc19750c0df5684e1fd01d8397737531d6253732fe0f21718",
+        "dependencies": "0ce89ec84c709b80801a65ee519c13fadb283c3cc688356dbd28a4dd4a1fcbae",
+        "composite": "c41896a9abe427da4fad93853da8a200a9aeff33f4c697a7d3113cc017a73480"
+      },
+      "warnings": [],
+      "failure_reason_codes": [],
+      "requested_transition": {
+        "action": "ADVANCE",
+        "target_stage": null,
+        "reason_code": "APPROVED",
+        "requires_human_confirmation": false
+      },
+      "last_error": null,
+      "updated_at": "2026-07-27T16:56:27.909876+00:00"
+    }
+  },
+  "cycles": {},
+  "artifacts": {
+    "state_of_art_draft.json": {
+      "path": "/tmp/tmp3nedao9m/exp_synthetic/05_outputs/05_draft/state_of_art_draft.json",
+      "hash": "67ac9a31cdccce66a0c2df59239fd872fc5ddadb5c8c46a70a7d5e1890388521",
+      "created_at": "2026-07-27T16:56:27.908169+00:00"
+    },
+    "state_of_art_draft.md": {
+      "path": "/tmp/tmp3nedao9m/exp_synthetic/05_outputs/05_draft/state_of_art_draft.md",
+      "hash": "59a133823890de2b197a35ec990fcc33f28149f758476e810774b64dc0c17fbb",
+      "created_at": "2026-07-27T16:56:27.908169+00:00"
+    },
+    "draft_sections.csv": {
+      "path": "/tmp/tmp3nedao9m/exp_synthetic/05_outputs/05_draft/draft_sections.csv",
+      "hash": "379f059460a042553e8e6d09822a2edce1fe3efe3048f52e6ca1502914455f63",
+      "created_at": "2026-07-27T16:56:27.908169+00:00"
+    },
+    "draft_rag_evidence.csv": {
+      "path": "/tmp/tmp3nedao9m/exp_synthetic/05_outputs/05_draft/draft_rag_evidence.csv",
+      "hash": "5d64038b83fdc9663e64fc4983f9082899f4f740fbd008ceeafd007904f5d385",
+      "created_at": "2026-07-27T16:56:27.908169+00:00"
+    },
+    "draft_quality_check.csv": {
+      "path": "/tmp/tmp3nedao9m/exp_synthetic/05_outputs/05_draft/draft_quality_check.csv",
+      "hash": "8489ab6c2aa642d234248beb5073c2d25af2ad001fb0d744ec4819e9597c0af7",
+      "created_at": "2026-07-27T16:56:27.908169+00:00"
+    },
+    "draft_length_check.csv": {
+      "path": "/tmp/tmp3nedao9m/exp_synthetic/05_outputs/05_draft/draft_length_check.csv",
+      "hash": "d408035103274a3af7e2ce7a1afc4927682d2fa35825b32898d739bd23f1ed22",
+      "created_at": "2026-07-27T16:56:27.908169+00:00"
+    },
+    "draft_claim_evidence.csv": {
+      "path": "/tmp/tmp3nedao9m/exp_synthetic/05_outputs/05_draft/draft_claim_evidence.csv",
+      "hash": "a2e3f1dc08cd88492e3ca35eaef4872b68b1644974b11e343a0cd1d40a27128a",
+      "created_at": "2026-07-27T16:56:27.908169+00:00"
+    },
+    "numeric_hallucination_check.csv": {
+      "path": "/tmp/tmp3nedao9m/exp_synthetic/05_outputs/05_draft/numeric_hallucination_check.csv",
+      "hash": "f01a158f06302923edfac565d5315dcd706c623b41c7c5de261f5f578cc87703",
+      "created_at": "2026-07-27T16:56:27.908169+00:00"
+    },
+    "draft_validation_report.json": {
+      "path": "/tmp/tmp3nedao9m/exp_synthetic/05_outputs/05_draft/draft_validation_report.json",
+      "hash": "0a7b6c575a7efbc493ae2f095fddbeef9103cbe725162b5bb0494260f8c7e393",
+      "created_at": "2026-07-27T16:56:27.908169+00:00"
+    },
+    "quantitative_comparative_table_used.csv": {
+      "path": "/tmp/tmp3nedao9m/exp_synthetic/05_outputs/05_draft/quantitative_comparative_table_used.csv",
+      "hash": "6d9b8dfd0b71b1fc84c999ade274891e9590c0275ac39e3d9e39d094315f8deb",
+      "created_at": "2026-07-27T16:56:27.908169+00:00"
+    },
+    "dataset_technique_summary_used.csv": {
+      "path": "/tmp/tmp3nedao9m/exp_synthetic/05_outputs/05_draft/dataset_technique_summary_used.csv",
+      "hash": "3d021341167bf603e31699e4ab80c19c414dd9cee21d828e3d59a57d80d1478d",
+      "created_at": "2026-07-27T16:56:27.908169+00:00"
+    },
+    "draft_generation_manifest.json": {
+      "path": "/tmp/tmp3nedao9m/exp_synthetic/05_outputs/05_draft/draft_generation_manifest.json",
+      "hash": "b6610f4436c63fac244291fca90531657c590cd04e37f898878ca1e3899366f1",
+      "created_at": "2026-07-27T16:56:27.908169+00:00"
+    },
+    "raw_section_outputs": {
+      "path": "/tmp/tmp3nedao9m/exp_synthetic/05_outputs/05_draft/raw_section_outputs",
+      "hash": "DIRECTORY",
+      "created_at": "2026-07-27T16:56:27.908169+00:00"
+    }
+  },
+  "decision_log": [
+    {
+      "decision_id": "d07903b3-9b3e-4d25-ad5b-87f0b8d49fed",
+      "timestamp": "2026-07-27T16:56:27.909876+00:00",
+      "agent": "06_agente_redactor",
+      "stage": "06_agente_redactor",
+      "attempt": 1,
+      "observations": {},
+      "decision": {
+        "code": "DRAFT_APPROVED",
+        "rationale": "Borrador generado por secciones y validado con evidencia restringida."
+      },
+      "reason_codes": [],
+      "requested_transition": {
+        "action": "ADVANCE",
+        "target_stage": null,
+        "reason_code": "APPROVED",
+        "requires_human_confirmation": false
+      },
+      "result": {
+        "execution_status": "COMPLETED",
+        "quality_status": "APPROVED",
+        "decision": {
+          "code": "DRAFT_APPROVED",
+          "rationale": "Borrador generado por secciones y validado con evidencia restringida."
+        },
+        "quality_metrics": {
+          "scientific": {},
+          "technical": {
+            "validation_ok": true,
+            "reused": false
+          }
+        },
+        "warnings": [],
+        "failure_reason_codes": [],
+        "requested_transition": {
+          "action": "ADVANCE",
+          "target_stage": null,
+          "reason_code": "APPROVED",
+          "requires_human_confirmation": false
+        },
+        "output_artifacts": {
+          "state_of_art_draft.json": {
+            "path": "/tmp/tmp3nedao9m/exp_synthetic/05_outputs/05_draft/state_of_art_draft.json",
+            "hash": "67ac9a31cdccce66a0c2df59239fd872fc5ddadb5c8c46a70a7d5e1890388521"
+          },
+          "state_of_art_draft.md": {
+            "path": "/tmp/tmp3nedao9m/exp_synthetic/05_outputs/05_draft/state_of_art_draft.md",
+            "hash": "59a133823890de2b197a35ec990fcc33f28149f758476e810774b64dc0c17fbb"
+          },
+          "draft_sections.csv": {
+            "path": "/tmp/tmp3nedao9m/exp_synthetic/05_outputs/05_draft/draft_sections.csv",
+            "hash": "379f059460a042553e8e6d09822a2edce1fe3efe3048f52e6ca1502914455f63"
+          },
+          "draft_rag_evidence.csv": {
+            "path": "/tmp/tmp3nedao9m/exp_synthetic/05_outputs/05_draft/draft_rag_evidence.csv",
+            "hash": "5d64038b83fdc9663e64fc4983f9082899f4f740fbd008ceeafd007904f5d385"
+          },
+          "draft_quality_check.csv": {
+            "path": "/tmp/tmp3nedao9m/exp_synthetic/05_outputs/05_draft/draft_quality_check.csv",
+            "hash": "8489ab6c2aa642d234248beb5073c2d25af2ad001fb0d744ec4819e9597c0af7"
+          },
+          "draft_length_check.csv": {
+            "path": "/tmp/tmp3nedao9m/exp_synthetic/05_outputs/05_draft/draft_length_check.csv",
+            "hash": "d408035103274a3af7e2ce7a1afc4927682d2fa35825b32898d739bd23f1ed22"
+          },
+          "draft_claim_evidence.csv": {
+            "path": "/tmp/tmp3nedao9m/exp_synthetic/05_outputs/05_draft/draft_claim_evidence.csv",
+            "hash": "a2e3f1dc08cd88492e3ca35eaef4872b68b1644974b11e343a0cd1d40a27128a"
+          },
+          "numeric_hallucination_check.csv": {
+            "path": "/tmp/tmp3nedao9m/exp_synthetic/05_outputs/05_draft/numeric_hallucination_check.csv",
+            "hash": "f01a158f06302923edfac565d5315dcd706c623b41c7c5de261f5f578cc87703"
+          },
+          "draft_validation_report.json": {
+            "path": "/tmp/tmp3nedao9m/exp_synthetic/05_outputs/05_draft/draft_validation_report.json",
+            "hash": "0a7b6c575a7efbc493ae2f095fddbeef9103cbe725162b5bb0494260f8c7e393"
+          },
+          "quantitative_comparative_table_used.csv": {
+            "path": "/tmp/tmp3nedao9m/exp_synthetic/05_outputs/05_draft/quantitative_comparative_table_used.csv",
+            "hash": "6d9b8dfd0b71b1fc84c999ade274891e9590c0275ac39e3d9e39d094315f8deb"
+          },
+          "dataset_technique_summary_used.csv": {
+            "path": "/tmp/tmp3nedao9m/exp_synthetic/05_outputs/05_draft/dataset_technique_summary_used.csv",
+            "hash": "3d021341167bf603e31699e4ab80c19c414dd9cee21d828e3d59a57d80d1478d"
+          },
+          "draft_generation_manifest.json": {
+            "path": "/tmp/tmp3nedao9m/exp_synthetic/05_outputs/05_draft/draft_generation_manifest.json",
+            "hash": "b6610f4436c63fac244291fca90531657c590cd04e37f898878ca1e3899366f1"
+          },
+          "raw_section_outputs": {
+            "path": "/tmp/tmp3nedao9m/exp_synthetic/05_outputs/05_draft/raw_section_outputs",
+            "hash": "DIRECTORY"
+          }
+        },
+        "tool_usage": {
+          "retrieval_rounds": 3,
+          "llm_calls": 3,
+          "validation_calls": 7
+        },
+        "attempt_number": 1,
+        "started_at": "2026-07-27T16:56:27.842435+00:00",
+        "completed_at": "2026-07-27T16:56:27.908169+00:00",
+        "error": null
+      }
+    }
+  ],
+  "invalidation": {
+    "scope": {
+      "type": "FULL"
+    },
+    "invalidated_stages": [],
+    "reasons": []
+  },
+  "pending_execution": null,
+  "human_review": null
+}

@@ -1,0 +1,133 @@
+{
+  "title": "Estado del arte sintético",
+  "topic": "Tema sintético",
+  "status": "draft_validated_for_verification",
+  "sections": [
+    {
+      "section_id": "S0",
+      "section_title": "Introducción",
+      "draft_text": "Esta sección presenta el alcance y la organización de la revisión. Su función es orientar la lectura y establecer la transición hacia el análisis de la evidencia científica desarrollado en las secciones siguientes.",
+      "claims": [],
+      "generation_attempt": 0,
+      "section_validation": {
+        "validation_ok": true,
+        "errors": [],
+        "citation_errors": [],
+        "claim_errors": [],
+        "numeric_errors": [],
+        "valid_citation_count": 0,
+        "substantive_sentence_count": 0,
+        "source_free_organizational_section": true
+      },
+      "deterministic_normalization": {
+        "applied": true,
+        "normalization_version": "v3_source_free_organizational_template",
+        "source_free_organizational_section": true,
+        "reason": "No evidence assigned by outline and section type permits an organizational introduction or conclusion."
+      }
+    },
+    {
+      "section_id": "S1",
+      "section_title": "Modelos predictivos",
+      "draft_text": "La evidencia comparativa documenta que el enfoque evaluado obtuvo 91% en el escenario descrito, lo que permite contrastar de manera verificable su comportamiento con las demás propuestas analizadas [paper_a.pdf | a_chroma].",
+      "claims": [
+        {
+          "claim": "La evidencia comparativa documenta que el enfoque evaluado obtuvo 91% en el escenario descrito, lo que permite contrastar de manera verificable su comportamiento con las demás propuestas analizadas",
+          "supporting_citations": [
+            "[paper_a.pdf | a_chroma]"
+          ]
+        }
+      ],
+      "generation_attempt": 1,
+      "section_validation": {
+        "validation_ok": true,
+        "errors": [],
+        "citation_errors": [],
+        "claim_errors": [],
+        "numeric_errors": [],
+        "valid_citation_count": 1,
+        "substantive_sentence_count": 1,
+        "original_errors": [],
+        "original_citation_errors": [],
+        "original_claim_errors": [],
+        "original_numeric_errors": [],
+        "original_validation_ok": true,
+        "normalized_validation_ok": true,
+        "normalization_repaired_output": false
+      }
+    },
+    {
+      "section_id": "S2",
+      "section_title": "Errores de estimación",
+      "draft_text": "La evidencia comparativa documenta que el enfoque evaluado obtuvo 91% en el escenario descrito, lo que permite contrastar de manera verificable su comportamiento con las demás propuestas analizadas [paper_a.pdf | a_chroma].",
+      "claims": [
+        {
+          "claim": "La evidencia comparativa documenta que el enfoque evaluado obtuvo 91% en el escenario descrito, lo que permite contrastar de manera verificable su comportamiento con las demás propuestas analizadas",
+          "supporting_citations": [
+            "[paper_a.pdf | a_chroma]"
+          ]
+        }
+      ],
+      "generation_attempt": 1,
+      "section_validation": {
+        "validation_ok": true,
+        "errors": [],
+        "citation_errors": [],
+        "claim_errors": [],
+        "numeric_errors": [],
+        "valid_citation_count": 1,
+        "substantive_sentence_count": 1,
+        "original_errors": [],
+        "original_citation_errors": [],
+        "original_claim_errors": [],
+        "original_numeric_errors": [],
+        "original_validation_ok": true,
+        "normalized_validation_ok": true,
+        "normalization_repaired_output": false
+      }
+    },
+    {
+      "section_id": "S3",
+      "section_title": "Comparación de rendimiento",
+      "draft_text": "La evidencia comparativa documenta que el enfoque evaluado obtuvo 88% en el escenario descrito, lo que permite contrastar de manera verificable su comportamiento con las demás propuestas analizadas [paper_b.pdf | b_chroma].",
+      "claims": [
+        {
+          "claim": "La evidencia comparativa documenta que el enfoque evaluado obtuvo 88% en el escenario descrito, lo que permite contrastar de manera verificable su comportamiento con las demás propuestas analizadas",
+          "supporting_citations": [
+            "[paper_b.pdf | b_chroma]"
+          ]
+        }
+      ],
+      "generation_attempt": 1,
+      "section_validation": {
+        "validation_ok": true,
+        "errors": [],
+        "citation_errors": [],
+        "claim_errors": [],
+        "numeric_errors": [],
+        "valid_citation_count": 1,
+        "substantive_sentence_count": 1,
+        "original_errors": [],
+        "original_citation_errors": [],
+        "original_claim_errors": [],
+        "original_numeric_errors": [],
+        "original_validation_ok": true,
+        "normalized_validation_ok": true,
+        "normalization_repaired_output": false
+      }
+    }
+  ],
+  "generation_summary": {
+    "experiment_id": "exp_synthetic",
+    "section_count": 4,
+    "ground_truth_used": false,
+    "open_search_used": false,
+    "citation_format": "[source_filename | chunk_id]",
+    "retrieval_strategy": "hybrid_chroma_csv_rrf_balanced",
+    "stage_version": "06_AGENTIC_V17_HYBRID_QUANTITATIVE_SOURCE_AWARE",
+    "rag_version": "hybrid_chroma_csv_rrf_balanced_v1",
+    "quantitative_selection_version": "confirmed_literal_greedy_coverage_v1",
+    "budget_version": "source_aware_exact_total_v1",
+    "validation_version": "legacy_notebook06_validation_v1"
+  }
+}

@@ -1,0 +1,4 @@
+section_id,claim_id,claim_text,numeric_value,found_in_cited_chunks,matching_citations,risk
+S1,S1_C1,"La evidencia comparativa documenta que el enfoque evaluado obtuvo 91% en el escenario descrito, lo que permite contrastar de manera verificable su comportamiento con las demás propuestas analizadas",91%,True,[paper_a.pdf | a_chroma],none
+S2,S2_C1,"La evidencia comparativa documenta que el enfoque evaluado obtuvo 91% en el escenario descrito, lo que permite contrastar de manera verificable su comportamiento con las demás propuestas analizadas",91%,True,[paper_a.pdf | a_chroma],none
+S3,S3_C1,"La evidencia comparativa documenta que el enfoque evaluado obtuvo 88% en el escenario descrito, lo que permite contrastar de manera verificable su comportamiento con las demás propuestas analizadas",88%,True,[paper_b.pdf | b_chroma],none

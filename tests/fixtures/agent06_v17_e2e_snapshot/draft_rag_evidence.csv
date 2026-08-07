@@ -1,0 +1,15 @@
+section_id,source_filename,chunk_id,text,score,retrieval_source,retrieval_sources,chroma_rank,csv_rank,rrf_score,selection_bucket,selection_order,lexical_overlap,quantitative_values,quantitative_coverage_keys,quantitative_row_ids,quantitative_metrics,verification_statuses,quantitative_marginal_gain
+S1,paper_a.pdf,a_chroma,Model accuracy evidence reached 91% on dataset A with method alpha.,0.95,chroma,"['chroma', 'csv']",1.0,1.0,0.03278688524590164,chroma_quota,1,,,,,,,
+S1,paper_b.pdf,b_chroma,Evaluation precision and performance reached 88% on dataset B.,0.92,chroma,"['chroma', 'csv']",2.0,5.0,0.0315136476426799,chroma_quota,2,,,,,,,
+S1,paper_a.pdf,a_shared,Comparative accuracy dataset evidence reported 92% using method alpha.,0.25,csv,"['chroma', 'csv']",3.0,2.0,0.03200204813108039,csv_quota,3,2.0,,,,,,
+S1,paper_b.pdf,b_quant,Confirmed accuracy was 95% for method beta on dataset B under condition test.,0.25,csv,"['chroma', 'csv']",6.0,3.0,0.031024531024531024,csv_quota,4,2.0,,,,,,
+S1,paper_a.pdf,a_quant,The confirmed RMSE error was 1.3 units for method alpha on dataset A.,0.031009615384615385,rrf,"['chroma', 'csv']",5.0,4.0,0.031009615384615385,quantitative_greedy,5,,['1.3'],['rmse|1.3|units|alpha|a|'],['q1'],['RMSE'],['confirmed_in_source_chunk'],1.0
+S2,paper_a.pdf,a_chroma,Model accuracy evidence reached 91% on dataset A with method alpha.,0.95,chroma,"['chroma', 'csv']",1.0,3.0,0.032266458495966696,chroma_quota,1,,,,,,,
+S2,paper_b.pdf,b_chroma,Evaluation precision and performance reached 88% on dataset B.,0.92,chroma,['chroma'],2.0,,0.016129032258064516,chroma_quota,2,,,,,,,
+S2,paper_a.pdf,a_quant,The confirmed RMSE error was 1.3 units for method alpha on dataset A.,0.42857142857142855,csv,"['chroma', 'csv']",5.0,1.0,0.03177805800756621,csv_quota,3,3.0,,,,,,
+S2,paper_b.pdf,b_shared,Comparative error evaluation measured 2.4 units using method beta.,0.2857142857142857,csv,"['chroma', 'csv']",4.0,2.0,0.031754032258064516,csv_quota,4,2.0,,,,,,
+S2,paper_b.pdf,b_quant,Confirmed accuracy was 95% for method beta on dataset B under condition test.,,,,,,,quantitative_greedy,5,,['95%'],['accuracy|95%||beta|b|test'],['q2'],['accuracy'],['confirmed_in_source_chunk'],1.0
+S3,paper_b.pdf,b_chroma,Evaluation precision and performance reached 88% on dataset B.,0.92,chroma,"['chroma', 'csv']",1.0,2.0,0.03252247488101534,chroma_quota,1,,,,,,,
+S3,paper_b.pdf,b_shared,Comparative error evaluation measured 2.4 units using method beta.,0.88,chroma,"['chroma', 'csv']",2.0,3.0,0.03200204813108039,chroma_quota,2,,,,,,,
+S3,paper_c.pdf,c_csv,Rendimiento precision comparison evaluation reported 86% for method gamma.,0.6,csv,"['chroma', 'csv']",3.0,1.0,0.032266458495966696,csv_quota,3,3.0,,,,,,
+S3,paper_b.pdf,b_quant,Confirmed accuracy was 95% for method beta on dataset B under condition test.,0.015625,rrf,['chroma'],4.0,,0.015625,rrf_quota_or_redistribution,4,,,,,,,
