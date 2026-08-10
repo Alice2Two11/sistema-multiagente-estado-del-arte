@@ -1,79 +1,26 @@
-# requirements.txt
-#
-# Generado a partir de un barrido real de los imports de src/ (no de memoria
-# ni de una plantilla). Cada paquete listado aquí aparece efectivamente
-# importado en al menos un módulo del repositorio -- ver el comentario junto
-# a cada línea para la ubicación real. No se incluye ninguna librería que no
-# se use.
-#
-# Requiere Python >= 3.10 (el código usa sintaxis de tipos "str | None" y
-# "list[str]" sin `from __future__ import annotations` en algunos módulos).
-#
-# Las versiones marcadas "verificado" corrieron realmente las 468/468
-# pruebas de tests/orchestration/ en el entorno de esta migración. Las
-# marcadas "no verificado aquí" corresponden a paquetes que solo se ejercitan
-# con red/credenciales reales (LLM, Chroma) -- en esta migración siempre se
-# sustituyeron por dobles deterministas, así que sus versiones exactas no se
-# probaron localmente y deben confirmarse en el smoke test real de Colab.
+# Entorno reproducible validado en Python 3.11 / Google Colab
 
-# --- LLM y orquestación de prompts (etapas 02-08) ---
-langchain-core>=0.2,<2.0          # verificado (1.5.3) -- src/agents/*, src/adapters/*_runtime.py (HumanMessage, etc.)
-langchain-openai>=0.1,<0.4        # NO verificado aquí (requiere red) -- cliente LLM real (ChatOpenAI) en los *_runtime.py de cada etapa
-openai>=1.30,<2.0                 # NO verificado aquí -- dependencia transitiva real de langchain-openai; el código también instancia clientes OpenAI directamente en varios adaptadores
+langchain-core==0.3.86
+langchain-openai==0.3.35
+openai==1.109.1
 
-# --- Recuperación vectorial (RAG, etapas 02, 06, 07) ---
-chromadb>=0.5,<0.6                # NO verificado aquí (requiere red/persistencia real) -- src/adapters/verification_incremental_retriever.py y RAG de 06/02
+chromadb==1.5.9
 
-# --- Datos tabulares y numéricos (uso transversal) ---
-pandas>=2.0,<4.0                  # verificado (3.0.2) -- uso extenso en src/tools/*, src/adapters/*; incluye .to_markdown()
-numpy>=1.26,<3.0                  # verificado (2.4.4) -- src/tools/evaluation/semantic_similarity.py y cálculos numéricos
+pandas==3.0.5
+numpy==2.4.6
+PyMuPDF==1.28.2
+langdetect==1.0.9
+cryptography==46.0.7
 
-# --- Extracción de texto de PDF (etapa 08, Ground Truth) ---
-PyMuPDF>=1.24,<2.0                # verificado (1.28.0) -- "import fitz" en src/tools/evaluation/ground_truth.py
+rouge-score==0.1.2
+bert-score==0.3.13
+sentence-transformers==5.7.0
+scikit-learn==1.9.0
+matplotlib==3.11.1
+tabulate==0.10.0
 
-# --- Detección de idioma (etapa 08, traducción condicional) ---
-langdetect==1.0.9                 # verificado (1.0.9) -- src/tools/evaluation/language_preprocessing.py (DetectorFactory.seed=0 para determinismo; fijar la versión exacta importa aquí)
+transformers==4.46.3
+tokenizers==0.20.3
+huggingface-hub==0.36.2
 
-# --- Métricas automáticas de evaluación (etapa 08) ---
-rouge-score==0.1.2                # verificado (0.1.2) -- src/tools/evaluation/rouge.py
-bert-score>=0.3.13,<0.4           # NO verificado aquí (descarga modelo + red la primera vez) -- src/tools/evaluation/bertscore.py ("import bert_score")
-sentence-transformers>=2.7,<6.0   # verificado (5.6.1) -- src/tools/evaluation/semantic_similarity.py (import diferido)
-scikit-learn>=1.4,<2.0            # verificado (1.8.0) -- cosine_similarity en semantic_similarity.py (import diferido)
-
-# --- Reportes en Markdown (etapa 08, final_evaluation_report.md) ---
-tabulate>=0.9,<1.0                # verificado (0.10.0) -- requerido por pandas.DataFrame.to_markdown() en evaluation_persistence.py
-
-# --- Credenciales y utilidades de entorno ---
-cryptography>=42.0,<47.0          # verificado (46.0.6) -- src/io/credentials.py (cryptography.fernet.Fernet)
-
-# ---------------------------------------------------------------------------
-# Opcional / solo si se ejecuta dentro de Google Colab
-# ---------------------------------------------------------------------------
-# google-colab está preinstalado en el entorno de Colab y NO debe agregarse
-# aquí como dependencia de pip: src/io/credentials.py lo importa de forma
-# diferida y con manejo de excepción si no existe (fuera de Colab no se usa).
-#   import google.colab as google_colab   # solo disponible en runtime de Colab
-
-# ---------------------------------------------------------------------------
-# Pesado / descarga de modelos en la primera ejecución
-# ---------------------------------------------------------------------------
-# sentence-transformers y bert-score descargan pesos de modelo (HuggingFace)
-# la primera vez que se usan -- comportamiento real de esas librerías, no
-# introducido por este repositorio. En Colab, la primera corrida de la etapa
-# 08 será más lenta por esta descarga.
-
-# ---------------------------------------------------------------------------
-# Solo para pruebas (no requerido para ejecutar el pipeline)
-# ---------------------------------------------------------------------------
-# ADVERTENCIA verificada empíricamente: las suites de tests/orchestration/
-# usan un decorador @scenario que captura internamente cualquier excepción y
-# la registra en una lista RESULTS -- NUNCA la relanza. Si se ejecutan con
-# "python -m pytest", pytest ve cada función test_* completar sin excepción y
-# la marca "passed" AUNQUE la aserción interna haya fallado realmente. Se
-# confirmó de forma concreta: una aserción falsa dentro de ese patrón produce
-# "1 passed" en pytest. El único corredor confiable es "python3 archivo.py"
-# (revisa la salida "N/N escenarios OK" y el código de salida del proceso).
-# No se recomienda pytest para este repositorio -- se deja aquí comentado
-# solo por si se usa en otro contexto (p. ej. tests/v16, tests/v17, que no
-# siguen este patrón).
-# pytest>=8.0,<9.0   # opcional; NO usar para tests/orchestration/ (ver advertencia)
+torch==2.13.0

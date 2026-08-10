@@ -131,7 +131,7 @@ Este ciclo se persiste en disco de forma transaccional en
 y un segundo intento de completar la misma ronda se rechaza explícitamente
 (no hay doble escritura silenciosa).
 
-### 07C: excluido del flujo activo
+### `07C`: excluido del flujo activo
 
 `07C` (reverificación de una corrección ya aplicada automáticamente) **no
 forma parte del flujo activo**. La ruta real es `07 → 06 (RETURN) → 07`
@@ -141,6 +141,82 @@ mensajes/nombres de archivo heredados donde era inevitable — su presencia
 en el código no significa que participe del registro de etapas activo
 (`STAGE_ORDER` en `src/orchestration/pipeline_orchestrator.py` no lo
 incluye).
+
+### Identidad estable de claims (`claim_uid`)
+
+`claim_id` (ej. `S5_C2`) es **posicional**: 06 lo recalcula cada vez que
+regenera una sección completa en modo `REVISION` (regenera la sección
+entera si tiene algún issue, no solo el claim señalado), así que la misma
+etiqueta puede referirse a afirmaciones distintas entre rondas. Para
+rastrear un claim de forma confiable entre rondas, cada claim tiene además:
+
+- `claim_uid`: UUID4 opaco, minteado una sola vez, nunca recalculado por
+  contenido ni posición.
+- `claim_version`: entero monótono, se incrementa solo cuando ese claim
+  específico se reescribe.
+- `parent_claim_uids`: linaje explícito — vacío al mintear, un padre en
+  una continuación o *split*, dos o más en un *merge*.
+
+La identidad se declara explícitamente por 06 (vía el contrato de
+respuesta del LLM: `identity_action` = `CONTINUE` / `NEW` / `SPLIT_CHILD`
+/ `MERGE`) — nunca se infiere después por similitud de texto. Cuando un
+`writer_revision_request` señala un `claim_uid` concreto, 06 debe
+preservarlo determinísticamente; si el LLM declara una identidad distinta,
+la respuesta se rechaza (fail-closed), nunca se sobreescribe en silencio.
+Ver `src/tools/draft_writing/claim_identity.py`.
+
+**Contrato de identidad por experimento** (`CycleState.claim_identity_
+contract_version`, en `pipeline_state.json`): `"LEGACY"` (comportamiento
+posicional, experimentos anteriores a este mecanismo) o `"STABLE_UID_V1"`.
+El contrato se resuelve de forma híbrida — si ya hay uno declarado para el
+ciclo, es normativo (nunca se re-infiere ni se permite un downgrade
+silencioso si algún `claim_uid` se pierde); solo en la primera ronda, sin
+nada declarado todavía, se infiere una vez de los propios claims.
+
+**Migración de un experimento `LEGACY`** ocurre de dos formas, nunca de
+forma implícita:
+1. *Dentro de una ronda real de revisión*: 06 declara una señal explícita
+   (`claim_identity_migration_signal=true` en su `committed_agent06_
+   output`, emitida automáticamente por `agent06_verification_handoff.py`
+   solo cuando el ciclo está en `LEGACY` y **todos** los claims publicados
+   ya tienen `claim_uid`/`claim_version` completos) — cuenta como una
+   ronda normal del ciclo `06 ↔ 07`.
+2. *Bootstrap administrativo* (`src/tools/draft_writing/claim_identity_
+   bootstrap.py::bootstrap_legacy_claim_identity_for_exhausted_cycle`),
+   para un ciclo que **ya agotó sus rondas científicas**
+   (`rounds_used >= max_rounds`) y no puede consumir otra solo para
+   adquirir identidad. Publica una copia nueva del draft (nunca sobrescribe
+   el histórico) con `claim_uid` recién minteado para cada claim —
+   `parent_claim_uids=[]` siempre, nunca se reconstruye una identidad
+   histórica por similitud — y compromete un nuevo resultado de 06 con
+   `ADVANCE → 07` real vía `StateStore`, sin tocar `rounds_used`,
+   `max_rounds`, ni ninguna decisión o claim históricos. Es idempotente:
+   si el ciclo ya es `STABLE_UID_V1`, no hace nada.
+
+### Reconstrucción causal del `decision_log`
+
+`decision_log` es *append-only* y puede acumular ejecuciones espurias
+(ej. reintentos tras un bug de control de flujo ya corregido) — ni
+`decision_log[-1]` ni `state.stages[etapa]` (el estado vigente, que una
+ejecución espuria posterior puede sobrescribir) son fuentes confiables por
+sí solas de "qué fue lo último que realmente pasó". `src/orchestration/
+decision_log_frontier.py` reconstruye la cadena causal real a partir de
+las transiciones que cada decisión solicitó, con dos funciones para dos
+preguntas distintas:
+
+- `authoritative_decision_log_entry_for_stage`: "¿cuál es el estado
+  terminal **vigente** de esta etapa?" — usada para reconocer un restart.
+- `committed_predecessor_for_stage`: "¿cuál fue el **último commit que
+  realmente habilitó** la etapa siguiente?" (`COMPLETED` + `ADVANCE` hacia
+  el target exacto) — usada para resolver una dependencia upstream (ej.
+  qué draft de 06 debe leer 07). Son preguntas distintas a propósito: la
+  primera puede apuntar a una ejecución espuria; la segunda nunca.
+
+`src/adapters/agent06_verification_handoff.py::resolve_committed_agent06_
+artifacts` usa siempre la segunda — es también la función que resuelve el
+draft canónico que lee 08 (ver más abajo), garantizando una única
+definición de "qué comprometió 06 realmente" en toda la cadena 06→07→08.
+
 
 ## 7. RAG, memoria documental, KB científica y trazabilidad
 
@@ -206,14 +282,50 @@ en esta entrega.
 
 ## 9. Requisitos
 
-- Python **>= 3.10** (el código usa `str | None` y `list[str]` sin
-  `from __future__ import annotations` en algunos módulos).
-- Ver `requirements.txt` para las dependencias exactas, con una nota junto
-  a cada una indicando si su versión fue verificada localmente (con dobles
-  deterministas) o si requiere el smoke test real de Colab para
-  confirmarse (LLM, Chroma).
+- Python **3.11** (versión exacta validada en el smoke test real de
+  Colab; el código en sí solo requiere `>= 3.10`).
+- Entorno **aislado** vía `virtualenv` — nunca el Python global de Colab.
+  El índice persistente real de Chroma no podía abrirse con `chromadb`
+  `0.5.x` (`KeyError('_type')`); `requirements.txt`/`constraints-colab.txt`
+  fijan `chromadb==1.5.9`, la única versión confirmada funcional.
+- Versiones exactas confirmadas (`pip check` sin dependencias rotas):
+  `langchain-core==0.3.86`, `langchain-openai==0.3.35`, `openai==1.109.1`,
+  `chromadb==1.5.9`, `transformers==4.46.3`, `tokenizers==0.20.3`,
+  `huggingface-hub==0.36.2`, `sentence-transformers==5.7.0`,
+  `bert-score==0.3.13`, `numpy==2.4.6`, `pandas==3.0.5`,
+  `scikit-learn==1.9.0`, `matplotlib==3.11.1`, `PyMuPDF==1.28.2`,
+  `rouge-score==0.1.2`, `tabulate==0.10.0`, `cryptography==46.0.7`,
+  `torch==2.13.0`. Ver `requirements.txt` (pines exactos) y
+  `constraints-colab.txt` (mismas versiones, como restricción explícita
+  adicional).
 
 ## 10. Instalación
+
+Entorno aislado real (recomendado, el que efectivamente se validó):
+
+```bash
+git clone <repo> /content/proyecto_estado_arte
+bash /content/proyecto_estado_arte/scripts/setup_colab.sh
+```
+
+`scripts/setup_colab.sh` crea el virtualenv en `/content/venv_estado_arte`
+(configurable con `VENV_DIR`), instala `requirements.txt` con
+`constraints-colab.txt` como restricción explícita (`-c`), corre
+`pip check`, y verifica en caliente que `chromadb`/`transformers`/
+`tokenizers` queden en las versiones exactas confirmadas. A partir de ahí,
+todo se ejecuta con el Python del venv, nunca el global:
+
+```bash
+/content/venv_estado_arte/bin/python -m src.orchestration.pipeline_orchestrator --project-dir /content/proyecto_estado_arte
+# o, equivalente, vía el wrapper que ya fija MPLBACKEND=Agg, el venv y
+# --project-dir (usa THESIS_PROJECT_DIR/ESTADO_ARTE_PYTHON si se
+# necesita otra ruta) -- cualquier flag adicional, incluido --start-stage,
+# se pasa transparentemente al orquestador real:
+python3 scripts/run_pipeline.py --start-stage 07_agente_verificador
+```
+
+Instalación mínima sin venv (solo para desarrollo/tests fuera de Colab,
+sin garantía de las versiones exactas de Chroma/torch):
 
 ```bash
 python3 -m pip install -r requirements.txt
@@ -324,6 +436,23 @@ Reejecuta la etapa inicial (`--until` o la primera) aunque ya esté
 etapas alcanzadas después por `ADVANCE`/`RETRY`/`RETURN` siguen evaluando
 sus propios fingerprints normalmente — `--force-rerun` no las fuerza a
 todas.
+
+### Retomar el pipeline en una etapa específica: `--start-stage`
+
+```bash
+python3 -m src.orchestration.pipeline_orchestrator --project-dir /ruta/a/PROJECT_DIR --start-stage 07_agente_verificador
+```
+
+Arranca el recorrido directamente en la etapa indicada, en vez de la
+primera de `STAGE_ORDER` — ejecuta **únicamente** esa etapa y las que
+resulten de sus transiciones reales, nunca las anteriores. A diferencia
+de `--force-rerun`, no ignora fingerprints por defecto: si la etapa ya
+está `COMPLETED` y vigente, se reconoce `SKIPPED_FRESH` con normalidad; si
+su último commit fue `FAILED` (ej. tras un `HALT_STAGE`), esto la
+reintenta con un `decision_id` nuevo, sin tocar ninguna etapa previa. Es
+la vía oficial para reintentar una sola etapa desde un estado terminal
+(ver `scripts/run_pipeline.py`, que pasa cualquier flag adicional
+transparentemente al orquestador real, incluido este).
 
 ## 15. Outputs principales
 
@@ -508,9 +637,62 @@ Este repositorio es el soporte de implementación de la tesis. El diseño
 multiagente, el ciclo correctivo 06↔07, y las métricas de evaluación de la
 etapa 08 corresponden directamente a los objetivos específicos y la
 metodología descritos en el documento de tesis. Los notebooks operativos
-originales (00-08) permanecen como fuente de referencia científica en
-`notebooks_2/`; este repositorio contiene la migración a un sistema
-transaccional productivo (`StateStore`, `StageSpec`, contratos
-`AgentInput`/`AgentResult`) sobre esa misma base científica, sin alterar
-las decisiones científicas de los notebooks originales salvo donde se
-documenta explícitamente lo contrario (ver secciones 6 y 20).
+originales (00-08) son la fuente de referencia científica original de este
+proyecto y no forman parte de este repositorio; este repositorio contiene
+la migración a un sistema transaccional productivo (`StateStore`,
+`StageSpec`, contratos `AgentInput`/`AgentResult`) sobre esa misma base
+científica, sin alterar las decisiones científicas de los notebooks
+originales salvo donde se documenta explícitamente lo contrario (ver
+secciones 6 y 20).
+
+## 25. Evaluación 08: `SUCCESS` / `PARTIAL_HALT`
+
+08 acepta exactamente dos tipos de entrada científica desde 07 — nunca un
+fallo técnico real (`execution_status=FAILED`, errores de runtime/
+contrato/artefactos, que jamás son evaluables):
+
+1. 07 `COMPLETED` + `APPROVED`/`APPROVED_WITH_WARNINGS` + `ADVANCE → 08` →
+   `pipeline_outcome = "SUCCESS"` (`verification_approved=true`,
+   `autonomous_convergence=true`, `human_review_required=false`).
+2. 07 `COMPLETED` + `NEEDS_REVISION` + `HALT_STAGE` por agotamiento
+   científico (ej. `WRITER_VERIFIER_MAX_ROUNDS_EXHAUSTED`, 3/3 rondas
+   usadas sin aprobación completa) → `pipeline_outcome = "PARTIAL_HALT"`
+   (`verification_approved=false`, `autonomous_convergence=false`,
+   `human_review_required=true`, con `rounds_used`/`max_rounds` y el
+   `reason_code` real de 07 registrados).
+
+El segundo camino **nunca se activa automáticamente**: requiere
+`"allow_partial_halt_evaluation": true` explícito en
+`active_experiment.json["evaluation_policy"]`. El `decision_log` de 07
+nunca se reescribe — su entrada sigue diciendo `HALT_STAGE` igual que
+antes; 08 solo decide, como una decisión propia y separada, que ese
+`HALT_STAGE` específico es evaluable bajo el flag explícito. Ver
+`src/adapters/evaluation_pipeline_outcome.py`.
+
+08 lee el draft canónico y sus artefactos usando la misma resolución
+causal que 07 (`resolve_committed_agent06_artifacts`, ver sección 6) —
+nunca una ruta fija — y valida el `source_draft_fingerprint` contra lo que
+07 realmente comprometió, para cualquier draft, incluidos los publicados
+por el bootstrap de identidad. Ground Truth se resuelve **exclusivamente**
+en esta etapa (`src/tools/evaluation/ground_truth.py`); ninguna otra etapa
+(02-07) lee ni recibe contenido de Ground Truth — reforzado con listas de
+rechazo explícitas en varios módulos de `src/tools/` además de la
+validación de política en `src/adapters/verification_orchestrator_runtime.py`.
+07C sigue excluido también aquí (nunca se pasa `agent07c_directory`).
+
+## 26. Módulos de configuración planos en `src/` (duplicación conocida)
+
+`src/config.py`, `src/experiment_config.py`, `src/generation_config.py`,
+`src/rag_policy.py`, `src/rag_utils.py`, `src/llm_utils.py`,
+`src/prompts.py`, `src/pdf_utils.py`, `src/io_utils.py` son módulos
+**planos**, en la raíz de `src/`, que las celdas de los notebooks
+operativos originales (`00_setup_config` y `07_agente_verificador`)
+escriben/leen directamente — **no** forman parte del sistema del
+orquestador (`src/orchestration/`, `src/adapters/`, `src/agents/`,
+`src/tools/`) y ningún módulo de ese sistema los importa. Son dos capas
+de configuración independientes que hoy coinciden (ambas aplican la misma
+política de aislamiento de Ground Truth, por ejemplo) pero que **podrían
+desincronizarse** si una se edita sin la otra. Se conservan porque
+notebooks reales todavía los usan; la fuente de verdad para todo lo que
+ejecuta el orquestador (03→08 vía `StateStore`/`StageSpec`) es siempre
+`active_experiment.json`, nunca estos módulos.
