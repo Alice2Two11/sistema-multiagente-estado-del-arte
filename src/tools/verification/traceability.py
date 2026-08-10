@@ -276,6 +276,9 @@ class ClaimTraceabilityRow:
     # Agent07 bundle V3 compatibility extension: preserve source confidence when available.
     source_verification_confidence: float | None = None
     source_confidence_status: str = "NOT_AVAILABLE_IN_SOURCE_CONTRACT"
+    # Identidad estable (ver src/tools/draft_writing/claim_identity.py) --
+    # "" para claims legacy sin identidad estable todavía.
+    claim_uid: str = ""
     def to_dict(self) -> dict[str, Any]: return asdict(self)
 
 

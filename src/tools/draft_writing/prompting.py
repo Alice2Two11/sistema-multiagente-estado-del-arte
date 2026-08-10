@@ -26,7 +26,7 @@ def assign_section_budgets(outline_sections, target_total_words):
     return budgets
 
 
-def build_section_prompt(section, evidence, quantitative_context, previous_errors, policy):
+def build_section_prompt(section, evidence, quantitative_context, previous_errors, policy, *, previous_claims_for_identity=None):
     section_id = safe_str(section.get("section_id"))
     allowed_citations = [f"[{row['source_filename']} | {row['chunk_id']}]" for row in evidence]
     budgets = policy.get("section_budgets") or assign_section_budgets(
@@ -35,6 +35,44 @@ def build_section_prompt(section, evidence, quantitative_context, previous_error
     )
     budget = budgets[section_id]
     no_sources = not evidence
+    if previous_claims_for_identity is None:
+        identity_rules = (
+            "17. IDENTIDAD DE CLAIMS: esta sección se redacta por primera vez -- "
+            "cada elemento de claims debe llevar \"identity_action\": \"NEW\" y "
+            "\"parent_claim_uids\": []."
+        )
+    else:
+        previous_claims_block = json.dumps(
+            [{"claim_uid": c["claim_uid"], "claim_text": c["claim_text"]} for c in previous_claims_for_identity],
+            ensure_ascii=False, indent=2,
+        )
+        identity_rules = f"""
+17. IDENTIDAD DE CLAIMS -- esta sección ya existía; a continuación se
+    listan sus claims previos, cada uno con su claim_uid real. Para
+    CADA claim que devuelvas en "claims", declara "identity_action" y
+    "parent_claim_uids" según cuál de estos cuatro casos corresponde:
+
+    - CONTINUE: este claim es una versión revisada de UN claim previo
+      (aunque cambie de posición o se reescriba). "parent_claim_uids"
+      debe tener EXACTAMENTE ese claim_uid, ej. ["<uid>"].
+    - NEW: este claim es una afirmación genuinamente nueva, que no
+      existía antes en esta sección. "parent_claim_uids": [].
+    - SPLIT_CHILD: este claim es UNA de varias partes en que se dividió
+      un claim previo. "parent_claim_uids" debe tener EXACTAMENTE el
+      claim_uid de ese claim previo, ej. ["<uid>"] (igual forma que
+      CONTINUE, pero se está dividiendo en más de un claim nuevo).
+    - MERGE: este claim fusiona DOS O MÁS claims previos en uno solo.
+      "parent_claim_uids" debe tener los claim_uid de TODOS los claims
+      previos que se fusionaron, ej. ["<uid1>", "<uid2>"].
+
+    Nunca inventes un claim_uid que no aparezca en la lista de claims
+    previos de abajo. Si un claim previo no corresponde a ningún claim
+    de tu respuesta, simplemente no lo continúes -- no hace falta
+    declarar nada sobre los claims previos que decidiste eliminar.
+
+CLAIMS PREVIOS DE ESTA SECCIÓN (con su claim_uid real):
+{previous_claims_block}
+""".strip()
     special_rule = (
         "Esta sección no tiene fuentes asignadas. Redacta únicamente "
         "una apertura o cierre organizativo, sin datos, resultados, "
@@ -77,6 +115,7 @@ REGLAS:
 15. Extensión objetivo: {budget['target_words']} palabras;
     rango orientativo: {budget['minimum_words']}-{budget['maximum_words']}.
 16. Devuelve únicamente JSON válido.
+{identity_rules}
 
 FORMATO:
 {{
@@ -88,7 +127,9 @@ FORMATO:
       "claim": "",
       "supporting_citations": [
         "[source_filename | chunk_id]"
-      ]
+      ],
+      "identity_action": "NEW",
+      "parent_claim_uids": []
     }}
   ]
 }}
@@ -154,15 +195,39 @@ def build_source_free_organizational_section(section, output_language="español"
 
 
 def build_section_revision_prompt(
-    section, evidence, quantitative_context, policy, *, previous_section_draft_text, issues
+    section, evidence, quantitative_context, policy, *, previous_section_draft_text, issues, previous_claims_for_identity
 ):
     """Modo REVISION: reutiliza ``build_section_prompt`` completo (mismas
     reglas científicas, mismo formato JSON, mismas restricciones de citas)
     y AÑADE un bloque correctivo al final — no reescribe ni duplica las
-    reglas originales."""
+    reglas originales.
 
-    base_prompt = build_section_prompt(section, evidence, quantitative_context, [], policy)
+    ``previous_claims_for_identity``: lista de ``{"claim_uid", "claim_text"}``
+    de los claims previos de ESTA sección (ver ``resolve_claim_identity`` --
+    la identidad se declara explícitamente por 06/el LLM en la respuesta,
+    nunca se infiere después por similitud de texto)."""
+
+    base_prompt = build_section_prompt(
+        section, evidence, quantitative_context, [], policy,
+        previous_claims_for_identity=previous_claims_for_identity,
+    )
     issues_block = json.dumps(issues, ensure_ascii=False, indent=2)
+    forced_uid_issues = [i for i in issues if i.get("claim_uid")]
+    forced_block = ""
+    if forced_uid_issues:
+        forced_lines = "\n".join(
+            f'    - El claim con claim_uid="{i["claim_uid"]}" DEBE seguir siendo ESE '
+            f'mismo claim_uid en tu respuesta (identity_action="CONTINUE", '
+            f'parent_claim_uids=["{i["claim_uid"]}"]) -- no es una decisión libre '
+            "para este claim en particular; la observación de verificación ya lo "
+            "identificó explícitamente."
+            for i in forced_uid_issues
+        )
+        forced_block = f"""
+
+IMPORTANTE -- IDENTIDAD FORZADA para los claims señalados abajo:
+{forced_lines}
+"""
     return (
         base_prompt
         + f"""
@@ -179,5 +244,6 @@ BORRADOR ANTERIOR DE ESTA SECCIÓN:
 
 OBSERVACIONES A RESOLVER:
 {issues_block}
+{forced_block}
 """.strip()
     )

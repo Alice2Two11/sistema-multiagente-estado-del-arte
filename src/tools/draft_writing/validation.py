@@ -161,3 +161,134 @@ def validate_draft_global(sections, outline_sections=None, evidence_map=None, po
         return {"validation_ok": not bad, "invalid_sections": bad, "section_count": len(sections)}
     report, _, _, _, _ = build_draft_reports(sections, outline_sections, evidence_map, policy)
     return report
+
+
+# --- NUMERIC_NORMALIZATION_FIX_V1 ---
+# Wrapper conservador sobre el validador original.
+# Solo elimina UNSUPPORTED_NUMERIC_VALUE cuando el mismo valor
+# aparece realmente en la evidencia entregada a 06.
+
+_validate_generated_section_original = validate_generated_section
+
+
+def _canonical_numeric_tokens(text):
+    import re
+
+    value = str(text or "")
+
+    # Normaliza decimal comma y espacios alrededor del %
+    value = value.replace(",", ".")
+
+    tokens = set()
+
+    # 42.9%, 42.9 %, 500, 0.001, etc.
+    for match in re.finditer(
+        r"(?<![\w.])[-+]?\d+(?:\.\d+)?\s*%?",
+        value,
+    ):
+        token = match.group(0).strip()
+        token = re.sub(r"\s+", "", token)
+
+        if token:
+            tokens.add(token)
+
+    # Formato invertido poco habitual: %42.9
+    for match in re.finditer(
+        r"%\s*[-+]?\d+(?:\.\d+)?",
+        value,
+    ):
+        token = match.group(0)
+        token = token.replace("%", "").strip()
+        token = re.sub(r"\s+", "", token)
+
+        if token:
+            tokens.add(token + "%")
+
+    return tokens
+
+
+def validate_generated_section(
+    generated,
+    section,
+    evidence,
+):
+    result = _validate_generated_section_original(
+        generated,
+        section,
+        evidence,
+    )
+
+    if not isinstance(result, dict):
+        return result
+
+    numeric_errors = list(
+        result.get("numeric_errors") or []
+    )
+
+    if not numeric_errors:
+        return result
+
+    evidence_tokens = set()
+
+    for row in evidence or []:
+        if not isinstance(row, dict):
+            continue
+
+        evidence_tokens.update(
+            _canonical_numeric_tokens(
+                row.get("text")
+                or row.get("chunk_text")
+                or ""
+            )
+        )
+
+    retained_numeric_errors = []
+
+    for error in numeric_errors:
+
+        prefix = "UNSUPPORTED_NUMERIC_VALUE:"
+
+        if not str(error).startswith(prefix):
+            retained_numeric_errors.append(error)
+            continue
+
+        raw_number = str(error)[len(prefix):].strip()
+
+        target_tokens = _canonical_numeric_tokens(
+            raw_number
+        )
+
+        # Solo se perdona el error si el valor está realmente
+        # presente en la evidencia usada por esta sección.
+        if target_tokens & evidence_tokens:
+            continue
+
+        retained_numeric_errors.append(error)
+
+    old_numeric = set(numeric_errors)
+    removed_numeric = old_numeric - set(
+        retained_numeric_errors
+    )
+
+    result["numeric_errors"] = retained_numeric_errors
+
+    # validation_errors/errors pueden contener el mismo código.
+    for key in ("errors", "validation_errors"):
+        if isinstance(result.get(key), list):
+            result[key] = [
+                item
+                for item in result[key]
+                if item not in removed_numeric
+            ]
+
+    result["validation_ok"] = not any(
+        [
+            result.get("errors"),
+            result.get("validation_errors"),
+            result.get("citation_errors"),
+            result.get("claim_errors"),
+            result.get("numeric_errors"),
+        ]
+    )
+
+    return result

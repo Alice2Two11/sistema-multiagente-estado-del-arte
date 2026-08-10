@@ -25,7 +25,6 @@ CARD_REQUIRED_FIELDS = [
     "task_type",
     "target_domain",
     "methods_or_models",
-    "evaluation_metrics",
     "main_results",
     "evidence",
 ]

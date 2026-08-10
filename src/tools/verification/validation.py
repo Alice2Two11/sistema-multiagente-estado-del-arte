@@ -6,6 +6,8 @@ de entrada y expone validadores de schema/resultados provisionales.
 """
 from __future__ import annotations
 
+from contextlib import contextmanager
+import contextvars
 from dataclasses import dataclass
 from hashlib import sha256
 import json
@@ -538,6 +540,14 @@ def deterministic_precheck(context: Mapping[str, Any]) -> dict[str, Any]:
     deterministic = dict(value["deterministic_validation"])
     claim_type = value["claim_type"]
     issues: list[str] = list(deterministic.get("deterministic_issue_codes", ()))
+    # Códigos que pertenecen al vocabulario RETRIEVAL_REASON_CODES, no a
+    # DETERMINISTIC_ISSUE_CODES -- nunca deben mezclarse con "issues"
+    # (que se convierte en deterministic_issue_codes más abajo). Se
+    # acumulan aquí, aparte, y se devuelven como retrieval_reason_codes
+    # para que el llamador los incorpore a reason_codes -- el campo
+    # cuyo vocabulario permitido SÍ incluye RETRIEVAL_REASON_CODES (ver
+    # validate_claim_verification_result_contract).
+    retrieval_reason_codes: list[str] = []
     judgment_required = claim_type not in {"ORGANIZATIONAL", "TRANSITIONAL"}
     terminal_verdict = ""
 
@@ -560,7 +570,7 @@ def deterministic_precheck(context: Mapping[str, Any]) -> dict[str, Any]:
     numeric_terminal = False
     if claim_type == "QUANTITATIVE" and not numeric_valid:
         if retrieval_possible:
-            issues.append("QUANTITATIVE_COVERAGE_INCOMPLETE")
+            retrieval_reason_codes.append("QUANTITATIVE_COVERAGE_INCOMPLETE")
         else:
             issues.append("UNSUPPORTED_NUMERIC_VALUE")
             numeric_terminal = True
@@ -585,6 +595,7 @@ def deterministic_precheck(context: Mapping[str, Any]) -> dict[str, Any]:
         "scientific_judgment_status": judgment_status,
         "scientific_verdict": terminal_verdict or "NOT_EVALUATED",
         "deterministic_issue_codes": tuple(sorted(set(issues))),
+        "retrieval_reason_codes": tuple(sorted(set(retrieval_reason_codes))),
         "retrieval_possible": retrieval_possible,
         "terminal_without_llm": bool(terminal_verdict) or judgment_status in {"BLOCKED", "COMPLETED"} and bool(issues),
     }
@@ -4753,7 +4764,7 @@ def build_provisional_traceability_rows(referential_result:Any):
         remaining=set(vr.get("deterministic_issue_codes",()))|set(vr.get("semantic_issue_codes",()))
         for x in linked:
             if x.get("comparison"):remaining.update(x["comparison"].get("remaining_issue_codes",()))
-        row=ClaimTraceabilityRow(vr["claim_id"],rec["section_id"],vr["claim_type"],original,vr["scientific_verdict"],tuple(vr.get("deterministic_issue_codes",()))+tuple(vr.get("semantic_issue_codes",())),vr["hallucination_risk"],bool(vr["llm_correction_recommendation"]),bool(cids),cids,decisions,acc,rej,defer,tuple(sorted(remaining)),bool(vr["manual_review_required"] or defer),False,source_verification_confidence=vr.get("confidence"),source_confidence_status="AVAILABLE" if vr.get("confidence") is not None else "NOT_AVAILABLE_IN_SOURCE_CONTRACT")
+        row=ClaimTraceabilityRow(vr["claim_id"],rec["section_id"],vr["claim_type"],original,vr["scientific_verdict"],tuple(vr.get("deterministic_issue_codes",()))+tuple(vr.get("semantic_issue_codes",())),vr["hallucination_risk"],bool(vr["llm_correction_recommendation"]),bool(cids),cids,decisions,acc,rej,defer,tuple(sorted(remaining)),bool(vr["manual_review_required"] or defer),False,source_verification_confidence=vr.get("confidence"),source_confidence_status="AVAILABLE" if vr.get("confidence") is not None else "NOT_AVAILABLE_IN_SOURCE_CONTRACT",claim_uid=vr.get("claim_uid") or "")
         claim_rows.append(validate_claim_traceability_row_contract(row.to_dict()))
         eligible={e["evidence_id"]:e for e in vr.get("eligible_evidence",())}
         used={e["evidence_id"] for e in vr.get("evidence_used",())};rejected={e["evidence_id"] for e in vr.get("evidence_rejected",())}
@@ -4882,7 +4893,7 @@ def build_provisional_traceability_rows(referential_result:Any):
         manual_review = bool(vr["manual_review_required"] or deferred)
         if manual_review or vr["scientific_verdict"] == "NOT_EVALUATED":
             warnings.append("AGGREGATION_ROW_MANUAL_REVIEW_REQUIRED")
-        row=ClaimTraceabilityRow(vr["claim_id"],rec["section_id"],vr["claim_type"],original,vr["scientific_verdict"],source,vr["hallucination_risk"],bool(vr["llm_correction_recommendation"]),bool(cids),cids,decisions,acc,rej,deferred,tuple(sorted(remaining)),manual_review,False,source_verification_confidence=vr.get("confidence"),source_confidence_status="AVAILABLE" if vr.get("confidence") is not None else "NOT_AVAILABLE_IN_SOURCE_CONTRACT")
+        row=ClaimTraceabilityRow(vr["claim_id"],rec["section_id"],vr["claim_type"],original,vr["scientific_verdict"],source,vr["hallucination_risk"],bool(vr["llm_correction_recommendation"]),bool(cids),cids,decisions,acc,rej,deferred,tuple(sorted(remaining)),manual_review,False,source_verification_confidence=vr.get("confidence"),source_confidence_status="AVAILABLE" if vr.get("confidence") is not None else "NOT_AVAILABLE_IN_SOURCE_CONTRACT",claim_uid=vr.get("claim_uid") or "")
         claim_rows.append(validate_claim_traceability_row_contract(row.to_dict()))
         eligible={e["evidence_id"]:e for e in vr.get("eligible_evidence",())};used={e["evidence_id"] for e in vr.get("evidence_used",())};rejected={e["evidence_id"] for e in vr.get("evidence_rejected",())}
         for eid in sorted(used|rejected):
@@ -5525,6 +5536,38 @@ def validate_provisional_collection_validation_result_contract(value: Mapping[st
     return _phase652_validate_collection_result_contract(value)
 
 
+_AGGREGATION_DIAGNOSTIC_SINK: contextvars.ContextVar[Path | None] = contextvars.ContextVar(
+    "_AGGREGATION_DIAGNOSTIC_SINK", default=None
+)
+
+
+@contextmanager
+def aggregation_diagnostic_sink(path: Path | None):
+    """Instrumentación de diagnóstico TEMPORAL y estrictamente opt-in.
+
+    Mientras el contexto está activo, si ``validate_and_normalize_
+    provisional_collections`` (la función activa, más abajo) encuentra
+    algún elemento inválido en cualquier colección de agregación,
+    además de su comportamiento normal (idéntico, sin cambios), escribe
+    un archivo de diagnóstico de solo lectura en ``path`` con el
+    registro crudo completo, el tipo y mensaje reales de la excepción
+    -- información que el comportamiento normal descarta
+    deliberadamente (solo conserva ``type(exc).__name__`` en los
+    ``warnings`` de agregación, nunca ``str(exc)``).
+
+    Cuando ``path`` es ``None`` (el valor por defecto en todo el resto
+    del código, fuera de este contexto), la función se comporta
+    EXACTAMENTE igual que antes de esta instrumentación -- no se activa
+    ningún camino nuevo, no se escribe ningún archivo. Reversible
+    quitando este bloque y su uso en ``execute_prepared_agent07``."""
+
+    token = _AGGREGATION_DIAGNOSTIC_SINK.set(path)
+    try:
+        yield
+    finally:
+        _AGGREGATION_DIAGNOSTIC_SINK.reset(token)
+
+
 # Effective 6.5.7 collection normalization with safe invalid-element audit records.
 def validate_and_normalize_provisional_collections(value: Mapping[str, Any]):
     from src.config.verification_policy_config import AGGREGATION_COLLECTION_NAMES
@@ -5536,6 +5579,15 @@ def validate_and_normalize_provisional_collections(value: Mapping[str, Any]):
     duplicates: list[dict[str, Any]] = []
     invalid_elements: list[dict[str, Any]] = []
     invalid = False
+    # Instrumentación de diagnóstico opt-in (ver aggregation_diagnostic_sink
+    # más arriba): NUNCA afecta issues/warnings/invalid/invalid_elements --
+    # es una lista aparte, solo poblada dentro del except de abajo, y solo
+    # volcada a disco si el sink está activo. Con el sink en None (el
+    # comportamiento por defecto en cualquier llamada fuera de este
+    # contexto), esta lista se calcula igual pero nunca se escribe --
+    # ningún costo ni cambio de comportamiento observable.
+    _diagnostic_sink_path = _AGGREGATION_DIAGNOSTIC_SINK.get()
+    _diagnostic_records: list[dict[str, Any]] = []
     for collection, validator, key_getter in _phase652_collection_specifications():
         by_key: dict[str, dict[str, dict[str, Any]]] = {}
         for position, item in enumerate(inp[collection]):
@@ -5556,6 +5608,25 @@ def validate_and_normalize_provisional_collections(value: Mapping[str, Any]):
                     "reason_code": reason,
                     "raw_element_fingerprint": _phase657_raw_element_fingerprint(item),
                 })
+                if _diagnostic_sink_path is not None:
+                    # Captura de solo lectura/diagnóstico -- nunca se
+                    # relanza ni se suprime la excepción original (ya se
+                    # manejó arriba exactamente igual que siempre); esto
+                    # solo AGREGA información a un archivo aparte, nunca
+                    # oficial, nunca leído por el resto del pipeline.
+                    try:
+                        _raw_element_json_safe = json.loads(json.dumps(item, default=str))
+                    except Exception:
+                        _raw_element_json_safe = repr(item)
+                    _diagnostic_records.append({
+                        "collection": collection,
+                        "position": position,
+                        "reason_code": reason,
+                        "raw_element_fingerprint": _phase657_raw_element_fingerprint(item),
+                        "raw_element": _raw_element_json_safe,
+                        "exception_type": type(exc).__name__,
+                        "exception_message": str(exc),
+                    })
         retained: dict[str, Mapping[str, Any]] = {}
         for key, variants in by_key.items():
             if len(variants) > 1:
@@ -5608,6 +5679,23 @@ def validate_and_normalize_provisional_collections(value: Mapping[str, Any]):
     normalized_payload["result_contract_valid"] = True
     result = ProvisionalCollectionValidationResult(**normalized_payload)
     validate_provisional_collection_validation_result_contract(result.to_dict())
+    if _diagnostic_sink_path is not None and _diagnostic_records:
+        # Escritura de diagnóstico, estrictamente adicional: ocurre DESPUÉS
+        # de que "result" ya quedó construido y validado exactamente como
+        # siempre -- esta escritura no puede alterar aggregation_status,
+        # resolution_status, ningún reason_code ni ninguna decisión
+        # científica, porque "result" ya está cerrado en este punto. Si la
+        # escritura misma fallara (permiso, disco lleno, etc.), se ignora
+        # silenciosamente: un fallo de diagnóstico nunca debe convertirse
+        # en un fallo del pipeline real.
+        try:
+            _diagnostic_sink_path.parent.mkdir(parents=True, exist_ok=True)
+            _diagnostic_sink_path.write_text(
+                json.dumps({"invalid_elements": _diagnostic_records}, indent=2, ensure_ascii=False, default=str),
+                encoding="utf-8",
+            )
+        except Exception:
+            pass
     return result
 
 

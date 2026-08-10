@@ -73,6 +73,8 @@ cuando no se inyecta ``bertscore_score_fn``), nunca al importar el módulo.
 
 from __future__ import annotations
 
+import os
+
 from typing import Any, Callable
 
 import numpy as np
@@ -160,6 +162,7 @@ def run_bertscore(
         raise ValueError("No se construyeron pares para BERTScore.")
 
     if bertscore_score_fn is None:
+        os.environ["MPLBACKEND"] = "Agg"
         from bert_score import score as bertscore_score_fn
 
     return bertscore_score_fn(
