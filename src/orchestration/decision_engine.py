@@ -301,15 +301,42 @@ def validate_transition(
 def is_stage_fresh(
     committed: StageState, current_fingerprints: StageFingerprints
 ) -> bool:
-    """True si los fingerprints comprometidos siguen vigentes frente a los actuales.
+    """True solo si la etapa terminó correctamente, quedó aprobada
+    y sus fingerprints siguen vigentes.
 
-    Reutiliza ``fingerprints_match`` (``src/state/fingerprints.py``) en vez de
-    comparar manualmente los cuatro campos.
+    Una etapa INVALIDATED, FAILED, NEEDS_REVISION o REJECTED nunca
+    puede reutilizarse como SKIPPED_FRESH aunque sus fingerprints
+    coincidan.
     """
+
+    execution_status = getattr(
+        committed.execution_status,
+        "value",
+        committed.execution_status,
+    )
+
+    quality_status = getattr(
+        committed.quality_status,
+        "value",
+        committed.quality_status,
+    )
+
+    if execution_status != "COMPLETED":
+        return False
+
+    if quality_status not in {
+        "APPROVED",
+        "APPROVED_WITH_WARNINGS",
+    }:
+        return False
 
     if committed.fingerprints.composite is None:
         return False
-    return fingerprints_match(committed.fingerprints, current_fingerprints)
+
+    return fingerprints_match(
+        committed.fingerprints,
+        current_fingerprints,
+    )
 
 
 def invalidate_from(

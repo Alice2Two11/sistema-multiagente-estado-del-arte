@@ -232,11 +232,26 @@ def _resolve_draft_execution_mode(project_dir: Path, store) -> dict[str, Any] | 
         raise RuntimeError(f"DRAFT_REVISION_ROUND_NOT_PERSISTED: round_{round_number:02d}")
 
     status = read_round_status(project_dir=project_dir, experiment_id=experiment_id, round_number=round_number)
-    if status is None or status["status"] != "AWAITING_REVISION":
+    if status is None:
+        raise RuntimeError(f"DRAFT_REVISION_ROUND_NOT_PERSISTED: round_{round_number:02d}")
+    if status["status"] not in {"AWAITING_REVISION", "REVISION_COMPLETED"}:
         raise RuntimeError(
             f"DRAFT_REVISION_ROUND_UNEXPECTED_STATUS: round_{round_number:02d} está en "
-            f"{(status or {}).get('status')!r}, se esperaba 'AWAITING_REVISION' para que 06 la tome."
+            f"{status['status']!r}, se esperaba 'AWAITING_REVISION' o 'REVISION_COMPLETED'."
         )
+    # 'REVISION_COMPLETED' significa que 06 YA completó esta ronda en una
+    # ejecución previa -- no hay nada nuevo que escribir. Esta función NO
+    # decide si 06 se reinvoca: solo reconstruye el MISMO AgentInput con el
+    # que se comprometió esa revisión, para que su fingerprint coincida con
+    # el ya comprometido y run_stage() lo reconozca como SKIPPED_FRESH sin
+    # tocar la ronda. writer_revision_request.json y el borrador previo son
+    # los MISMOS archivos persistidos en ambos estados (AWAITING_REVISION y
+    # REVISION_COMPLETED) -- solo cambia el campo de estado de la ronda, que
+    # no forma parte de este AgentInput. Si, pese a la coincidencia de
+    # fingerprint, algo más forzara una reinvocación real de 06 sobre esta
+    # misma ronda, complete_round_revision() ya rechaza explícitamente un
+    # segundo intento de completarla (ver su docstring) -- esa red de
+    # seguridad no se toca aquí.
 
     writer_revision_request = read_round_artifact(
         project_dir=project_dir, experiment_id=experiment_id, round_number=round_number,
@@ -890,6 +905,239 @@ def run_stage(
         )
 
 
+def _reconcile_pending_execution_for_other_stage(
+    *,
+    store,
+    project_dir: Path,
+    registry: Mapping[str, "StageSpec"],
+    current_stage: str,
+    attempt_numbers: Mapping[str, int],
+    observations: Mapping[str, Any] | None,
+) -> tuple[list["StageOutcome"], bool]:
+    """Si ``state.pending_execution`` existe y apunta a una etapa DISTINTA
+    de ``current_stage``, la reconcilia vía el protocolo OFICIAL de esa
+    otra etapa (``run_stage`` sobre su propio ``StageSpec``) antes de que
+    se intente preparar ``current_stage``.
+
+    Motivo: ``StateStore.prepare_execution`` mantiene un único slot GLOBAL
+    de ``pending_execution`` (no uno por etapa) -- una ejecución
+    interrumpida de OTRA etapa (ej. 07 crasheando antes de comprometer)
+    deja ese slot ocupado y bloquea la preparación de CUALQUIER otra
+    etapa, incluida la que el pipeline está intentando ahora, con
+    ``RuntimeError("a pending execution already exists")``. Esta función
+    nunca lee ni escribe ``pending_execution`` directamente -- delega
+    por completo en ``run_stage()`` para la etapa a la que realmente
+    pertenece, que ya sabe resolverla oficialmente (COMMIT del resultado
+    persistido, liberar para reejecutar, o lo que corresponda según su
+    propio protocolo -- para 07 esto enruta a
+    ``_run_verification_stage``/``resume_agent07_execution``).
+
+    Devuelve ``(outcomes_a_agregar, debe_detenerse)``: si
+    ``debe_detenerse`` es ``True``, el llamador no debe intentar preparar
+    ``current_stage`` en esta vuelta (o bien la pending sigue sin
+    resolverse tras el intento oficial, o bien apunta a una etapa sin
+    ``StageSpec`` registrado -- inconsistencia real que se reporta
+    explícitamente, nunca se oculta ni se fuerza)."""
+
+    state = store.load()
+    pending = state.pending_execution
+    if pending is None or pending.target_stage == current_stage:
+        return [], False
+
+    pending_stage_key = pending.target_stage
+    if pending_stage_key not in registry:
+        return (
+            [
+                StageOutcome(
+                    key=current_stage,
+                    label=registry[current_stage].label if current_stage in registry else current_stage,
+                    status="FAILED",
+                    execution_status=None,
+                    quality_status=None,
+                    warnings=(),
+                    error={
+                        "type": "PendingExecutionUnknownTargetStage",
+                        "message": (
+                            f"pending_execution.target_stage={pending_stage_key!r} "
+                            "no está en el registro de etapas -- no se puede "
+                            "reconciliar automáticamente."
+                        ),
+                    },
+                    attempt_number=0,
+                    next_action="HALT_STAGE",
+                    target_stage=None,
+                    reason_code="PENDING_EXECUTION_UNKNOWN_TARGET_STAGE",
+                )
+            ],
+            True,
+        )
+
+    pending_spec = registry[pending_stage_key]
+    reconcile_outcome = run_stage(
+        store=store,
+        project_dir=project_dir,
+        spec=pending_spec,
+        attempt_number=attempt_numbers.get(pending_stage_key, 1),
+        observations=observations,
+        force_rerun=False,
+    )
+
+    state = store.load()
+    if state.pending_execution is not None:
+        # El protocolo oficial de esa etapa no logró liberar la pending
+        # (ej. sigue EXECUTED_NOT_COMMITTED esperando otra vuelta) -- no
+        # se fuerza nada más. El llamador se detiene aquí en vez de
+        # intentar preparar current_stage, que el store rechazaría de
+        # nuevo con el mismo error.
+        return [reconcile_outcome], True
+
+    return [reconcile_outcome], False
+
+
+def _apply_stage_transition(
+    outcome: "StageOutcome",
+    *,
+    store,
+    stage_key: str,
+    attempt_number: int,
+    attempt_numbers: dict[str, int],
+    until: str | None,
+    outcomes: list["StageOutcome"],
+) -> tuple[str | None, bool]:
+    """Interpreta ``outcome.next_action`` con la MISMA semántica que
+    gobierna el bucle principal de ``run_pipeline`` (ADVANCE con
+    resolución de ciclo, RETRY, RETURN con ``apply_return_with_cycle`` y
+    posible agotamiento del ciclo, o HALT_STAGE/STOP_PIPELINE) --
+    factorizada para poder aplicarse tanto a la etapa que el bucle está
+    procesando en su vuelta normal como a una etapa reconciliada fuera de
+    orden (ver ``_reconcile_pending_execution_for_other_stage``): antes
+    de esta función, la transición de una etapa reconciliada (ej. 07,
+    resuelta porque tenía una ``pending_execution`` vieja) se ignoraba
+    por completo -- el bucle seguía su recorrido normal desde
+    ``current_stage`` sin importar si la reconciliación había producido
+    HALT_STAGE, RETURN o ADVANCE, lo que permitía llegar a intentar una
+    etapa posterior (06) que ya no correspondía tocar.
+
+    Devuelve ``(nuevo_current_stage_o_None, debe_detenerse)`` -- si
+    ``debe_detenerse`` es ``True``, el llamador debe terminar el bucle
+    (pipeline completo, HALT_STAGE/STOP_PIPELINE, o ciclo agotado -- en
+    este último caso ya se agregó el ``StageOutcome`` de
+    ``CYCLE_EXHAUSTED`` a ``outcomes`` antes de devolver)."""
+
+    if until is not None and stage_key == until:
+        return None, True
+
+    if outcome.next_action == "ADVANCE":
+        if outcome.target_stage is None:
+            return None, True  # pipeline completo
+        if stage_key == de.WRITER_VERIFIER_TRIGGER_STAGE:
+            resolve_cycle_if_active(store)
+        return outcome.target_stage, False
+
+    if outcome.next_action == "RETRY":
+        attempt_numbers[stage_key] = attempt_number + 1
+        return stage_key, False
+
+    if outcome.next_action == "RETURN":
+        cycle_result = apply_return_with_cycle(
+            store,
+            from_stage=stage_key,
+            target_stage=outcome.target_stage,
+            reason=f"INVALIDATED_BY_RETURN_FROM_{stage_key}",
+        )
+        if cycle_result.cycle_exhausted:
+            outcomes.append(
+                StageOutcome(
+                    key=stage_key,
+                    label=f"(ciclo {de.WRITER_VERIFIER_CYCLE_NAME} agotado)",
+                    status="CYCLE_EXHAUSTED",
+                    execution_status=None,
+                    quality_status=None,
+                    warnings=(),
+                    error=None,
+                    attempt_number=attempt_number,
+                    next_action="HALT_STAGE",
+                    target_stage=None,
+                    reason_code="WRITER_VERIFIER_CYCLE_EXHAUSTED",
+                )
+            )
+            return None, True
+        for stage_key_to_clear in CANONICAL_STAGE_ORDER[
+            CANONICAL_STAGE_ORDER.index(outcome.target_stage) :
+        ]:
+            attempt_numbers.pop(stage_key_to_clear, None)
+        return outcome.target_stage, False
+
+    # HALT_STAGE o STOP_PIPELINE: se detiene el bucle.
+    return None, True
+
+
+from src.orchestration.decision_log_frontier import (
+    _causally_connects,
+    _segment_decision_log,
+    _reconstruct_authoritative_frontier,
+)
+
+
+def _check_already_terminal_state(
+    *, store, registry: Mapping[str, "StageSpec"], start_stage: str | None, force_rerun: bool
+) -> "StageOutcome | None":
+    """Si la decisión AUTORITATIVA del ``decision_log`` (ver
+    ``_reconstruct_authoritative_frontier`` -- ni la última entrada
+    cronológica ni asumir un único tramo desde el principio) pidió
+    explícitamente ``HALT_STAGE`` o ``STOP_PIPELINE``, el pipeline ya
+    está en un estado TERMINAL -- un restart sin ``start_stage``
+    explícito ni ``--force-rerun`` no debe recorrer las etapas de nuevo
+    asumiendo que hay trabajo pendiente. Devuelve el ``StageOutcome``
+    terminal a reportar tal cual (sin tocar ningún estado), o ``None``
+    si no aplica.
+
+    El ``StageOutcome`` se construye SIEMPRE a partir del propio
+    ``frontier_entry.result`` (el ``AgentResult`` persistido en esa
+    entrada exacta del log, vía ``AgentResult.from_dict`` +
+    ``_outcome_from_result`` -- la misma función que ya usa el resto del
+    módulo para construir un ``StageOutcome`` desde un ``AgentResult``
+    real) -- nunca desde ``state.stages[stage]`` (el estado COMPROMETIDO
+    VIGENTE de esa etapa), que puede corresponder a una ejecución
+    POSTERIOR y distinta de la entrada histórica que este chequeo
+    determinó como terminal. Mezclar ambas fuentes es exactamente lo
+    que producía ``ALREADY_TERMINAL`` con un ``next_action=ADVANCE`` --
+    una contradicción de contrato que nunca debe poder ocurrir: se
+    afirma explícitamente como invariante antes de devolver."""
+
+    if start_stage is not None or force_rerun:
+        return None
+
+    state = store.load()
+    frontier_entry = _reconstruct_authoritative_frontier(state.decision_log)
+    if frontier_entry is None:
+        return None
+
+    frontier_transition = frontier_entry.requested_transition
+    if (
+        frontier_transition is None
+        or frontier_transition.action not in (TransitionAction.HALT_STAGE, TransitionAction.STOP_PIPELINE)
+        or frontier_entry.stage not in registry
+    ):
+        return None
+
+    frontier_result = AgentResult.from_dict(frontier_entry.result)
+    outcome = _outcome_from_result(
+        registry[frontier_entry.stage], frontier_result, "ALREADY_TERMINAL", attempts_used=frontier_entry.attempt
+    )
+
+    # Invariante obligatoria: ALREADY_TERMINAL nunca puede coexistir con
+    # una transición no terminal. Si por cualquier motivo no se cumple
+    # (no debería, dado el chequeo de frontier_transition.action arriba,
+    # pero se verifica explícitamente en vez de confiar en eso
+    # implícitamente), no se afirma un estado terminal que el propio
+    # outcome contradice -- se deja que el flujo normal decida.
+    if outcome.next_action not in ("HALT_STAGE", "STOP_PIPELINE"):
+        return None
+
+    return outcome
+
+
 def run_pipeline(
     project_dir: str | Path,
     *,
@@ -932,6 +1180,13 @@ def run_pipeline(
     outcomes: list[StageOutcome] = []
     force_rerun_current = force_rerun
 
+    terminal_outcome = _check_already_terminal_state(
+        store=store, registry=registry, start_stage=start_stage, force_rerun=force_rerun
+    )
+    if terminal_outcome is not None:
+        _print_outcome(terminal_outcome)
+        return [terminal_outcome]
+
     for _ in range(max_iterations):
         if current_stage not in registry:
             outcomes.append(
@@ -952,6 +1207,37 @@ def run_pipeline(
             break
 
         spec = registry[current_stage]
+
+        reconcile_outcomes, must_stop = _reconcile_pending_execution_for_other_stage(
+            store=store, project_dir=project_dir, registry=registry, current_stage=current_stage,
+            attempt_numbers=attempt_numbers, observations=observations,
+        )
+        if reconcile_outcomes:
+            reconcile_outcome = reconcile_outcomes[0]
+            outcomes.append(reconcile_outcome)
+            _print_outcome(reconcile_outcome)
+            if must_stop:
+                # Inconsistencia real (etapa de la pending sin StageSpec
+                # registrado) o la pending sigue sin resolverse tras el
+                # intento oficial -- no hay transición válida que
+                # despachar; se detiene aquí, igual que antes.
+                break
+            # La transición REAL de la etapa reconciliada (HALT_STAGE,
+            # RETURN o ADVANCE) gobierna el flujo principal a partir de
+            # aquí -- nunca se ignora para seguir el recorrido normal
+            # desde current_stage.
+            reconciled_stage_key = reconcile_outcome.key
+            reconciled_attempt_number = attempt_numbers.get(reconciled_stage_key, 1)
+            new_stage, should_stop = _apply_stage_transition(
+                reconcile_outcome, store=store, stage_key=reconciled_stage_key,
+                attempt_number=reconciled_attempt_number, attempt_numbers=attempt_numbers,
+                until=until, outcomes=outcomes,
+            )
+            if should_stop:
+                break
+            current_stage = new_stage
+            continue
+
         attempt_number = attempt_numbers.get(current_stage, 1)
         outcome = run_stage(
             store=store,
@@ -965,54 +1251,13 @@ def run_pipeline(
         outcomes.append(outcome)
         _print_outcome(outcome)
 
-        if until is not None and current_stage == until:
+        new_stage, should_stop = _apply_stage_transition(
+            outcome, store=store, stage_key=current_stage, attempt_number=attempt_number,
+            attempt_numbers=attempt_numbers, until=until, outcomes=outcomes,
+        )
+        if should_stop:
             break
-
-        if outcome.next_action == "ADVANCE":
-            if outcome.target_stage is None:
-                break  # pipeline completo
-            if current_stage == de.WRITER_VERIFIER_TRIGGER_STAGE:
-                resolve_cycle_if_active(store)
-            current_stage = outcome.target_stage
-            continue
-
-        if outcome.next_action == "RETRY":
-            attempt_numbers[current_stage] = attempt_number + 1
-            continue
-
-        if outcome.next_action == "RETURN":
-            cycle_result = apply_return_with_cycle(
-                store,
-                from_stage=current_stage,
-                target_stage=outcome.target_stage,
-                reason=f"INVALIDATED_BY_RETURN_FROM_{current_stage}",
-            )
-            if cycle_result.cycle_exhausted:
-                outcomes.append(
-                    StageOutcome(
-                        key=current_stage,
-                        label=f"(ciclo {de.WRITER_VERIFIER_CYCLE_NAME} agotado)",
-                        status="CYCLE_EXHAUSTED",
-                        execution_status=None,
-                        quality_status=None,
-                        warnings=(),
-                        error=None,
-                        attempt_number=attempt_number,
-                        next_action="HALT_STAGE",
-                        target_stage=None,
-                        reason_code="WRITER_VERIFIER_CYCLE_EXHAUSTED",
-                    )
-                )
-                break
-            for stage_key in CANONICAL_STAGE_ORDER[
-                CANONICAL_STAGE_ORDER.index(outcome.target_stage) :
-            ]:
-                attempt_numbers.pop(stage_key, None)
-            current_stage = outcome.target_stage
-            continue
-
-        # HALT_STAGE o STOP_PIPELINE: se detiene el bucle.
-        break
+        current_stage = new_stage
     else:
         raise RuntimeError(
             "run_pipeline alcanzó max_iterations sin converger a un estado "
@@ -1051,6 +1296,24 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         help="Detenerse tras completar esta etapa (por defecto corre hasta 06).",
     )
     parser.add_argument(
+        "--start-stage",
+        default=None,
+        choices=STAGE_ORDER,
+        help=(
+            "Empezar el recorrido directamente en esta etapa, en vez de "
+            "STAGE_ORDER[0] -- ejecuta ÚNICAMENTE esta etapa y las que "
+            "resulten de sus transiciones reales (nunca las anteriores). "
+            "Con start-stage explícito, el chequeo de estado ya-terminal "
+            "se omite deliberadamente (se respeta la petición explícita "
+            "del llamador, igual que --force-rerun) -- si la etapa ya "
+            "está COMPLETED y vigente (fingerprints sin cambios), sigue "
+            "reconociéndose SKIPPED_FRESH con normalidad; si su último "
+            "commit fue FAILED (ej. HALT_STAGE), esto la reintenta con "
+            "un decision_id nuevo, SIN --force-rerun y sin tocar ninguna "
+            "etapa previa."
+        ),
+    )
+    parser.add_argument(
         "--force-rerun",
         action="store_true",
         help="Reejecuta la etapa inicial aunque ya esté COMPLETED y vigente en pipeline_state.json.",
@@ -1062,6 +1325,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = _parse_args(argv)
     outcomes = run_pipeline(
         args.project_dir,
+        start_stage=args.start_stage,
         until=args.until,
         force_rerun=args.force_rerun,
     )

@@ -65,6 +65,10 @@ class ClaimVerificationResult:
     result_contract_valid: bool
     scientific_validation_ok: bool
     validation_ok: bool
+    # Identidad estable (ver src/tools/draft_writing/claim_identity.py) --
+    # "" para claims legacy sin identidad estable todavía (frontera
+    # explícita, nunca reconstruida retroactivamente por similitud).
+    claim_uid: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -449,6 +453,13 @@ class VerificationAgent:
         )
         scientific_ok = validated["verdict"] == "SUPPORTED" and risk == "LOW"
         trace.append(f"VERDICT_{validated['verdict']}")
+        # reason_codes viene de la respuesta del LLM (validated) -- no
+        # se sobreescribe. Los códigos de RETRIEVAL_REASON_CODES
+        # detectados en el precheck (ej. QUANTITATIVE_COVERAGE_INCOMPLETE)
+        # ya NO viven en deterministic_issue_codes (ver
+        # deterministic_precheck) -- se incorporan aquí, como unión con
+        # lo que el LLM reportó, para no perder ese registro de auditoría.
+        reason_codes = tuple(sorted(set(validated["reason_codes"]) | set(precheck.get("retrieval_reason_codes", ()))))
         return ClaimVerificationResult(
             current["claim_id"], current["claim_type"], True, "COMPLETED", "OK",
             tuple(sorted(set(technical_issues))), "COMPLETED", validated["verdict"], validated["support_level"],
@@ -457,19 +468,27 @@ class VerificationAgent:
             {"type": validated["contradiction_type"], "evidence_ids": validated["contradiction_evidence_ids"]},
             validated["numeric_assessment"], validated["attribution_assessment"],
             validated["extrapolation_assessment"], risk, validated["llm_correction_recommendation"], correction,
-            manual_review_required, tuple(validated["reason_codes"]),
+            manual_review_required, reason_codes,
             self._tool_usage(considered=considered, selected=selected_tools, retrieval_requests=retrieval_requests,
                 retrieval_rounds=int(current.get("retrieval_result", {}).get("rounds_executed", 0)),
                 evidence_selected=len(selection.eligible_evidence), llm_calls=llm_calls,
                 format_attempts=format_attempts, schema_validation_attempts=schema_attempts,
                 scientific_judgment_attempts=scientific_attempts, format_retries=format_retries, schema_retries=schema_retries),
             tuple(trace), tuple(raw_attempts), True, scientific_ok, True,
+            current.get("claim_uid", ""),
         )
 
     def _terminal(self, current, precheck, selection, verdict, support_level, technical_issues, trace,
                   raw_attempts, considered, selected_tools, llm_calls, format_attempts, schema_attempts,
                   scientific_attempts, retrieval_requests, format_retries, schema_retries):
         deterministic = tuple(precheck["deterministic_issue_codes"])
+        # reason_codes históricamente reusaba "deterministic" tal cual.
+        # Los códigos de RETRIEVAL_REASON_CODES (ej.
+        # QUANTITATIVE_COVERAGE_INCOMPLETE) ya NO viven en
+        # deterministic_issue_codes (ver deterministic_precheck) -- se
+        # incorporan aquí, aparte, al único campo cuyo vocabulario
+        # permitido sí los acepta.
+        reason_codes = tuple(sorted(set(deterministic) | set(precheck.get("retrieval_reason_codes", ()))))
         risk = compute_hallucination_risk(deterministic_issue_codes=deterministic, semantic_issue_codes=(),
             validated_response=None, eligible_evidence=selection.eligible_evidence,
             technical_status=str(precheck.get("technical_status", "OK")))
@@ -485,11 +504,12 @@ class VerificationAgent:
             selection.eligible_evidence, selection.deterministically_discarded_evidence, (), (),
             {"type": "NONE", "evidence_ids": ()},
             "UNSUPPORTED" if "UNSUPPORTED_NUMERIC_VALUE" in deterministic else "NOT_APPLICABLE",
-            "NOT_APPLICABLE", "NOT_APPLICABLE", risk, False, correction, manual, deterministic,
+            "NOT_APPLICABLE", "NOT_APPLICABLE", risk, False, correction, manual, reason_codes,
             self._tool_usage(considered=considered, selected=selected_tools, retrieval_requests=retrieval_requests,
                 retrieval_rounds=int(current.get("retrieval_result", {}).get("rounds_executed", 0)),
                 evidence_selected=len(selection.eligible_evidence), llm_calls=llm_calls,
                 format_attempts=format_attempts, schema_validation_attempts=schema_attempts,
                 scientific_judgment_attempts=scientific_attempts, format_retries=format_retries, schema_retries=schema_retries),
             tuple(trace), tuple(dict(x) for x in raw_attempts), True, scientific_ok, True,
+            current.get("claim_uid", ""),
         )

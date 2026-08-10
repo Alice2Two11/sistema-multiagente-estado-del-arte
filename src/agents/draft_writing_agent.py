@@ -31,6 +31,14 @@ from src.tools.draft_writing.artifacts import (
 from src.tools.draft_writing.hybrid_retrieval import retrieve_section_evidence_hybrid
 from src.tools.draft_writing.input_validation import validate_draft_dependencies
 from src.tools.draft_writing.normalization import normalize_generated_section
+from src.tools.draft_writing.claim_identity import (
+    ClaimIdentityDeclaration,
+    ClaimIdentityRecord,
+    check_no_claim_uid_collisions,
+    default_mint_claim_uid,
+    enforce_forced_claim_uid_continuations,
+    resolve_claim_identity,
+)
 from src.tools.draft_writing.prompting import (
     assign_section_budgets,
     build_section_prompt,
@@ -47,6 +55,7 @@ from src.tools.draft_writing.retrieval import (
 from src.tools.draft_writing.source_aware_budgets import (
     assign_source_aware_section_budgets,
 )
+from src.tools.verification.corrections import fingerprint_text
 from src.tools.draft_writing.validation import (
     CITATION_RE,
     build_draft_reports,
@@ -291,6 +300,63 @@ class DraftWritingAgent:
         )
         return combined
 
+    def _resolve_section_claim_identities(
+        self, section: dict[str, Any], *, previous_claims_by_uid: dict[str, ClaimIdentityRecord],
+        round_number: int, forced_parent_uids: tuple[str, ...] = (),
+    ) -> list[ClaimIdentityRecord]:
+        """Resuelve claim_uid/claim_version/parent_claim_uids/etc. (ver
+        ``src/tools/draft_writing/claim_identity.py``) para cada claim
+        de ``section["claims"]``, en el orden en que aparecen -- el
+        ``claim_id`` posicional (``f"{sid}_C{idx}"``) se sigue
+        calculando igual, pero deja de ser la fuente de identidad.
+
+        Muta ``section["claims"]`` in-place, agregando los campos de
+        ``ClaimIdentityRecord`` a cada claim. Devuelve la lista de
+        records resueltos, para que el llamador acumule el chequeo de
+        colisión (``check_no_claim_uid_collisions``) y de continuación
+        forzada (``enforce_forced_claim_uid_continuations``) a nivel de
+        TODO el borrador -- nunca solo de esta sección, porque un
+        claim_uid debe ser único en todo el documento, no solo dentro
+        de su propia sección."""
+
+        section_id = str(section.get("section_id", "")).strip()
+        claims = section.get("claims") or []
+        resolved: list[ClaimIdentityRecord] = []
+        for idx, claim in enumerate(claims, start=1):
+            if not isinstance(claim, dict):
+                continue
+            claim_id = f"{section_id}_C{idx}"
+            claim_text = str(claim.get("claim") or "")
+            action_raw = claim.get("identity_action")
+            parents_raw = tuple(claim.get("parent_claim_uids") or ())
+            if action_raw is None:
+                # El LLM no declaró identidad (ej. sección INITIAL_DRAFT
+                # sin contrato de identidad todavía, o una respuesta
+                # incompleta) -- nunca se asume en silencio: se trata
+                # como NEW explícito solo cuando no había NINGÚN claim
+                # previo posible (INITIAL_DRAFT real); si había
+                # previous_claims_by_uid disponibles y el LLM omitió el
+                # campo, es un fallo de contrato real.
+                if previous_claims_by_uid:
+                    raise ValueError(
+                        f"CLAIM_IDENTITY_MISSING_DECLARATION:{section_id}:{claim_id}"
+                    )
+                action_raw = "NEW"
+            declaration = ClaimIdentityDeclaration(action=action_raw, parent_claim_uids=parents_raw)
+            record = resolve_claim_identity(
+                declaration=declaration, claim_text=claim_text, claim_id=claim_id,
+                previous_claims_by_uid=previous_claims_by_uid, forced_parent_uid=None,
+                round_number=round_number, text_fingerprint=fingerprint_text,
+                mint_uid=default_mint_claim_uid,
+            )
+            claim.update(record.to_dict())
+            resolved.append(record)
+
+        enforce_forced_claim_uid_continuations(
+            resolved_claims=resolved, forced_parent_uids=forced_parent_uids,
+        )
+        return resolved
+
     def execute(self, agent_input):
         policy_mode = dict(agent_input.policy).get("mode", "INITIAL_DRAFT")
         if policy_mode == "REVISION":
@@ -394,6 +460,33 @@ class DraftWritingAgent:
                 unresolved_issue_ids.extend(issue_ids)
                 continue
 
+            # Identidad estable de claims (ver claim_identity.py):
+            # solo se ofrecen como "continuables" los claims previos que
+            # YA tienen claim_uid -- una sección de un experimento
+            # anterior a este contrato ("legacy", requisito explícito
+            # de no reconstruir identidades retroactivamente por
+            # similitud) simplemente no tiene ningún claim_uid previo
+            # que continuar: todo lo que el LLM genere para ella será
+            # necesariamente NEW, sin intentar adivinar de dónde viene.
+            previous_claims_by_uid = {
+                c["claim_uid"]: ClaimIdentityRecord(
+                    claim_uid=c["claim_uid"], claim_version=c["claim_version"], claim_id=c.get("claim_id", ""),
+                    parent_claim_uids=tuple(c.get("parent_claim_uids") or ()),
+                    claim_text_fingerprint=c.get("claim_text_fingerprint", ""),
+                    created_round=c.get("created_round", 1), updated_round=c.get("updated_round", 1),
+                )
+                for c in (previous_section.get("claims") or [])
+                if isinstance(c, dict) and c.get("claim_uid")
+            }
+            previous_claims_for_identity = [
+                {"claim_uid": c["claim_uid"], "claim_text": str(c.get("claim", ""))}
+                for c in (previous_section.get("claims") or [])
+                if isinstance(c, dict) and c.get("claim_uid")
+            ]
+            forced_parent_uids = tuple(
+                str(issue["claim_uid"]) for issue in section_issues if issue.get("claim_uid")
+            )
+
             prompt = build_section_revision_prompt(
                 outline_section,
                 evidence,
@@ -401,6 +494,7 @@ class DraftWritingAgent:
                 policy,
                 previous_section_draft_text=str(previous_section.get("draft_text", "")),
                 issues=section_issues,
+                previous_claims_for_identity=previous_claims_for_identity,
             )
             raw = self.runtime.invoke(prompt)
             llm_calls += 1
@@ -412,6 +506,10 @@ class DraftWritingAgent:
             normalized["generation_attempt"] = round_number
             validation = validate_generated_section(normalized, outline_section, evidence)
             normalized["section_validation"] = validation
+            self._resolve_section_claim_identities(
+                normalized, previous_claims_by_uid=previous_claims_by_uid,
+                round_number=round_number, forced_parent_uids=forced_parent_uids,
+            )
             generated.append(normalized)
 
             has_errors = bool(
@@ -422,10 +520,15 @@ class DraftWritingAgent:
             action = "REVISED" if not has_errors else "REVISED_WITH_REMAINING_ISSUES"
             changelog.append({"section_id": section_id, "action": action, "issue_ids": issue_ids})
             evidence_refs = [f"{row['source_filename']}|{row['chunk_id']}" for row in evidence]
+            claim_uid_by_issue_id = {
+                str(issue.get("issue_id")): str(issue.get("claim_uid") or "")
+                for issue in section_issues
+            }
             for issue in section_issues:
                 resolution_matrix.append(
                     {
                         "issue_id": issue.get("issue_id"),
+                        "claim_uid": claim_uid_by_issue_id.get(str(issue.get("issue_id")), ""),
                         "action_taken": "SECTION_REGENERATED_LOCALIZED",
                         "section_id": section_id,
                         "evidence_used": evidence_refs,
@@ -434,6 +537,18 @@ class DraftWritingAgent:
                 )
             if has_errors:
                 unresolved_issue_ids.extend(issue_ids)
+
+        check_no_claim_uid_collisions(
+            [
+                ClaimIdentityRecord(
+                    claim_uid=c["claim_uid"], claim_version=c["claim_version"], claim_id=c.get("claim_id", ""),
+                    parent_claim_uids=tuple(c.get("parent_claim_uids") or ()),
+                    claim_text_fingerprint=c.get("claim_text_fingerprint", ""),
+                    created_round=c.get("created_round", round_number), updated_round=c.get("updated_round", round_number),
+                )
+                for section in generated for c in (section.get("claims") or []) if isinstance(c, dict) and c.get("claim_uid")
+            ]
+        )
 
         revised_draft = {**previous_draft, "sections": generated, "revision_round": round_number}
         revised_draft_path = out / "revised_draft.json"
@@ -940,7 +1055,24 @@ class DraftWritingAgent:
                         started_at=start,
                         completed_at=datetime.now(timezone.utc).isoformat(),
                     )
+                self._resolve_section_claim_identities(
+                    accepted, previous_claims_by_uid={}, round_number=1,
+                )
                 generated.append(accepted)
+
+            # Colisión de claim_uid a nivel de TODO el borrador inicial
+            # -- nunca solo por sección (ver check_no_claim_uid_collisions).
+            check_no_claim_uid_collisions(
+                [
+                    ClaimIdentityRecord(
+                        claim_uid=c["claim_uid"], claim_version=c["claim_version"], claim_id=c["claim_id"],
+                        parent_claim_uids=tuple(c.get("parent_claim_uids") or ()),
+                        claim_text_fingerprint=c["claim_text_fingerprint"],
+                        created_round=c["created_round"], updated_round=c["updated_round"],
+                    )
+                    for section in generated for c in (section.get("claims") or []) if "claim_uid" in c
+                ]
+            )
 
             evidence_map: dict[str, list[dict[str, Any]]] = {}
             for row in all_evidence:
