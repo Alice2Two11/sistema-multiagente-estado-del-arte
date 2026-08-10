@@ -59,7 +59,18 @@ def test_early_operational_block_uses_audit_only_payload_set(tmp_path):
     validate_executed_agent07_execution_contract(executed)
 
 
-def test_terminal_scientific_block_uses_full_candidate_payload_set_but_cannot_commit(tmp_path):
+def test_terminal_scientific_block_commits_successfully_when_bundle_is_classifiable(tmp_path):
+    # NOTA: antes del parche que corrigió _agent07_has_classifiable_bundle
+    # (ver src/adapters/verification_notebook.py), un runtime_status=BLOCKED
+    # SIEMPRE se rechazaba en commit_executed_agent07, sin importar si el
+    # bundle/resolución eran clasificables. Ese comportamiento cambió
+    # deliberadamente: un bloqueo CIENTÍFICO con bundle+resolución reales
+    # (como este, aggregation_status=INVALID pero con datos presentes) debe
+    # poder comprometerse igual que un COMPLETED/PARTIAL -- solo el bloqueo
+    # OPERATIVO real (sin bundle) sigue siendo rechazado. Esta prueba se
+    # actualizó para reflejar ese contrato vigente; ver también
+    # tests/orchestration/test_agent07_scientific_block_commit.py para la
+    # cobertura completa de esa distinción.
     store, executed = _execute(tmp_path, "BLOCKED")
 
     assert executed.runtime_result.runtime_status == "BLOCKED"
@@ -70,11 +81,9 @@ def test_terminal_scientific_block_uses_full_candidate_payload_set_but_cannot_co
     assert set(executed.candidate_payloads) == set(AGENT07_ARTIFACT_NAMES)
     validate_executed_agent07_execution_contract(executed)
 
-    with pytest.raises(RuntimeError, match="SCIENTIFIC_BLOCK_NOT_OFFICIAL_COMMITTABLE"):
-        commit_executed_agent07(store=store, executed=executed)
+    commit_executed_agent07(store=store, executed=executed)  # ya no lanza
 
-    assert not (tmp_path / "official").exists()
-    assert store.load().pending_execution is not None
+    assert store.load().pending_execution is None
 
 
 def test_completed_result_uses_full_candidate_payload_set(tmp_path):

@@ -84,7 +84,7 @@ def test_global_claim_id_duplicate_across_sections_is_rejected():
         {"claim_id":"dup","section_id":"s1"},{"claim_id":"dup","section_id":"s2"},
       ),
       "expected_claim_ids":("dup","dup"),"claim_inventory_fingerprint":"b"*64,"agent06_decision_id":"d",
-      "outline_mapping_fingerprint":"c"*64,"integration_metadata":{},
+      "outline_mapping_fingerprint":"c"*64,"claim_identity_migration_signal":False,"integration_metadata":{},
     }
     with pytest.raises(ValueError,match="GLOBAL_CLAIM_ID_DUPLICATE"):
         validate_agent06_verification_handoff_contract(handoff)
@@ -96,7 +96,7 @@ def test_builder_uses_artifacts_captured_from_real_agent06_e2e(tmp_path):
     refs={}
     for name in names:
         target=tmp_path/name; target.write_bytes((src/name).read_bytes()); refs[name]=ArtifactReference(str(target),sha256_file(target))
-    result=AgentResult(ExecutionStatus.COMPLETED,QualityStatus.APPROVED,DecisionInfo("OK","ok"),{},(),RequestedTransition(TransitionAction.ADVANCE,"07","OK",False),refs,ToolUsage(),1,"2026-01-01","",completed_at="2026-01-01")
+    result=AgentResult(ExecutionStatus.COMPLETED,QualityStatus.APPROVED,DecisionInfo("OK","ok"),{},(),RequestedTransition(TransitionAction.ADVANCE,"07_agente_verificador","OK",False),refs,ToolUsage(),1,"2026-01-01","",completed_at="2026-01-01")
     log=DecisionLogEntry("d06","2026-01-01","06_agente_redactor","06_agente_redactor",1,{}, {"code":"OK"},(),None,result.to_dict())
     state=PipelineState(PipelineIdentity("exp_synthetic","run_synthetic","2026-01-01","2026-01-01","v1"),stages={"06_agente_redactor":StageState(execution_status=ExecutionStatus.COMPLETED)},artifacts={name:ArtifactState(ref,"2026-01-01") for name,ref in refs.items()},decision_log=(log,))
     mapping=tmp_path/"outline_paper_mapping.csv"; mapping.write_bytes((src/"outline_paper_mapping.csv").read_bytes())

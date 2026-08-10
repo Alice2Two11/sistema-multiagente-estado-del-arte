@@ -60,7 +60,7 @@ def _store_fixture(tmp_path,repeated=False,foreign_draft=False,conflicting_evide
     (tmp_path/'draft_validation_report.json').write_text('{}');files['draft_validation_report.json']=tmp_path/'draft_validation_report.json'
     (tmp_path/'draft_generation_manifest.json').write_text(json.dumps({"source_draft_fingerprint":"a"*64,"artifact_identity":"draft06"}));files['draft_generation_manifest.json']=tmp_path/'draft_generation_manifest.json'
     refs={name:ArtifactReference(str(p),sha256_file(p)) for name,p in files.items()}
-    result=AgentResult(ExecutionStatus.COMPLETED,QualityStatus.APPROVED,DecisionInfo('OK','ok'),{},(),RequestedTransition(TransitionAction.ADVANCE,'07','OK',False),refs,ToolUsage(),1,'2026-01-01','',completed_at='2026-01-01')
+    result=AgentResult(ExecutionStatus.COMPLETED,QualityStatus.APPROVED,DecisionInfo('OK','ok'),{},(),RequestedTransition(TransitionAction.ADVANCE,'07_agente_verificador','OK',False),refs,ToolUsage(),1,'2026-01-01','',completed_at='2026-01-01')
     log=DecisionLogEntry('d06','2026-01-01','06_agente_redactor','06_agente_redactor',1,{}, {'code':'OK'},(),None,result.to_dict())
     state=PipelineState(PipelineIdentity('exp','run','2026-01-01','2026-01-01','v1'),stages={'06_agente_redactor':StageState(execution_status=ExecutionStatus.COMPLETED)},artifacts={name:ArtifactState(ref,'2026-01-01') for name,ref in refs.items()},decision_log=(log,))
     if foreign_draft:

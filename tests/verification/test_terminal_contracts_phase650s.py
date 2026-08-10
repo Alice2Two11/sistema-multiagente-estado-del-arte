@@ -14,7 +14,7 @@ from src.tools.verification.validation import (
 def valid_claim_result():
     ev={"evidence_id":"ev1","source_filename":"paper.pdf","chunk_id":"c1","authorized_for_section":True,"usage_role":"SUPPORT"}
     return {
-      "claim_id":"cl1","claim_type":"FACTUAL","scientific_judgment_required":True,
+      "claim_id":"cl1","claim_uid":"uid-cl1","claim_type":"FACTUAL","scientific_judgment_required":True,
       "execution_status":"COMPLETED","technical_status":"OK","technical_issue_codes":[],
       "scientific_judgment_status":"COMPLETED","scientific_verdict":"SUPPORTED","support_level":"STRONG",
       "deterministic_issue_codes":[],"semantic_issue_codes":[],"eligible_evidence":[ev],

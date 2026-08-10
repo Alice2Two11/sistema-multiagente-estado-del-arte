@@ -28,6 +28,7 @@ def _tool_usage():
 def _terminal_unresolved_claim(*, judgment_status="BLOCKED"):
     return {
         "claim_id": "S2_C6",
+        "claim_uid": "uid-S2_C6",
         "claim_type": "SUBSTANTIVE_FACTUAL",
         "scientific_judgment_required": True,
         "execution_status": "COMPLETED",

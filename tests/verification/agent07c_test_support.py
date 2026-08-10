@@ -62,6 +62,7 @@ def terminal_handoff_args(bundle, resolution, contexts, experiment_id="exp"):
       "source_draft_fingerprint":str(contexts[0]["source_draft_fingerprint"]),"agent06_manifest_source_draft_fingerprint":None,
       "claim_verification_contexts":contexts,"expected_claim_ids":ids,"claim_inventory_fingerprint":_fp(ids),
       "agent06_decision_id":"d06","outline_mapping_fingerprint":"c"*64,
+      "claim_identity_migration_signal":False,
       "integration_metadata":{"agent07_config_fingerprint":"d"*64,"policy_versions":{},"schema_versions":{},"experiment_paths":{}},
     }
     return {

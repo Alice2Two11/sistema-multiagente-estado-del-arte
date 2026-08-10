@@ -24,7 +24,7 @@ def _real_agent06_handoff(tmp_path):
     refs={}
     for name in names:
         target=tmp_path/name; target.write_bytes((src/name).read_bytes()); refs[name]=ArtifactReference(str(target),sha256_file(target))
-    result=AgentResult(ExecutionStatus.COMPLETED,QualityStatus.APPROVED,DecisionInfo("OK","ok"),{},(),RequestedTransition(TransitionAction.ADVANCE,"07","OK",False),refs,ToolUsage(),1,"2026-01-01","",completed_at="2026-01-01")
+    result=AgentResult(ExecutionStatus.COMPLETED,QualityStatus.APPROVED,DecisionInfo("OK","ok"),{},(),RequestedTransition(TransitionAction.ADVANCE,"07_agente_verificador","OK",False),refs,ToolUsage(),1,"2026-01-01","",completed_at="2026-01-01")
     log=DecisionLogEntry("d06","2026-01-01","06_agente_redactor","06_agente_redactor",1,{}, {"code":"OK"},(),None,result.to_dict())
     state=PipelineState(PipelineIdentity("exp_synthetic","run_synthetic","2026-01-01","2026-01-01","v1"),stages={"06_agente_redactor":StageState(execution_status=ExecutionStatus.COMPLETED)},artifacts={name:ArtifactState(ref,"2026-01-01") for name,ref in refs.items()},decision_log=(log,))
     mapping=tmp_path/"outline_paper_mapping.csv"; mapping.write_bytes((src/"outline_paper_mapping.csv").read_bytes())
