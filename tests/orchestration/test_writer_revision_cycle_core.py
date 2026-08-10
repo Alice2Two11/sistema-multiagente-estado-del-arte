@@ -81,7 +81,7 @@ def test_correctable_with_evidence_returns():
         claims=claims, technical_status="COMPLETED", rounds_used=0, max_rounds=3
     )
     assert result["action"] == "RETURN"
-    assert result["correctable_claim_ids"] == ("c2",)
+    assert result["correctable_claim_uids"] == ("c2",)
 
 
 @scenario("R03. Un claim POTENTIALLY_AUTO_CORRECTABLE CON evidencia -> RETURN")
@@ -101,7 +101,7 @@ def test_manual_review_blocks_even_with_correctable():
     )
     assert result["action"] == "HALT_STAGE"
     assert result["reason_code"] == "AGENT07_NON_CORRECTABLE_ISSUE"
-    assert result["blocking_claim_ids"] == ("c2",)
+    assert result["blocking_claim_uids"] == ("c2",)
 
 
 @scenario("R05. Un claim NOT_CORRECTABLE_WITH_AVAILABLE_EVIDENCE -> HALT_STAGE")
@@ -161,7 +161,7 @@ def test_correctable_without_evidence_blocks():
     )
     assert result["action"] == "HALT_STAGE"
     assert result["reason_code"] == "AGENT07_CORRECTION_EVIDENCE_INSUFFICIENT"
-    assert result["blocking_claim_ids"] == ("c1",)
+    assert result["blocking_claim_uids"] == ("c1",)
 
 
 @scenario("H02. Claim corregible sin evidence_used pero con correction_proposal.supporting_evidence -> RETURN")
@@ -232,7 +232,7 @@ def test_revision_request_only_correctable():
         experiment_id="exp1", cycle_id="cyc1", round_number=1,
         source_draft_path="draft.json",
         source_draft_fingerprint="fp_draft", verification_fingerprint="fp_verif",
-        claims=claims, correctable_claim_ids=("c2",), transition_reason="AGENT07_CORRECTABLE_ISSUES",
+        claims=claims, correctable_claim_uids=("c2",), claim_identity_contract_version="LEGACY", transition_reason="AGENT07_CORRECTABLE_ISSUES",
     )
     assert len(request["issues"]) == 1
     assert request["issues"][0]["claim_id"] == "c2"
@@ -250,7 +250,7 @@ def test_revision_request_derives_evidence():
         experiment_id="exp1", cycle_id="cyc1", round_number=1,
         source_draft_path="draft.json",
         source_draft_fingerprint="fp1", verification_fingerprint="fp2",
-        claims=claims, correctable_claim_ids=("c1",), transition_reason="AGENT07_CORRECTABLE_ISSUES",
+        claims=claims, correctable_claim_uids=("c1",), claim_identity_contract_version="LEGACY", transition_reason="AGENT07_CORRECTABLE_ISSUES",
     )
     issue = request["issues"][0]
     assert issue["source_filename"] == "paper1.pdf"
@@ -267,7 +267,7 @@ def test_revision_request_no_evidence_raises():
             experiment_id="exp1", cycle_id="cyc1", round_number=1,
             source_draft_path="draft.json",
             source_draft_fingerprint="fp1", verification_fingerprint="fp2",
-            claims=claims, correctable_claim_ids=("c1",), transition_reason="AGENT07_CORRECTABLE_ISSUES",
+            claims=claims, correctable_claim_uids=("c1",), claim_identity_contract_version="LEGACY", transition_reason="AGENT07_CORRECTABLE_ISSUES",
         )
     except ValueError as exc:
         assert "AGENT07_CORRECTION_EVIDENCE_INSUFFICIENT" in str(exc)
@@ -282,7 +282,7 @@ def test_revision_request_no_duplicates():
         experiment_id="exp1", cycle_id="cyc1", round_number=1,
         source_draft_path="draft.json",
         source_draft_fingerprint="fp1", verification_fingerprint="fp2",
-        claims=claims, correctable_claim_ids=("c1",), transition_reason="AGENT07_CORRECTABLE_ISSUES",
+        claims=claims, correctable_claim_uids=("c1",), claim_identity_contract_version="LEGACY", transition_reason="AGENT07_CORRECTABLE_ISSUES",
     )
     assert len(request["issues"]) == 1
 
@@ -294,7 +294,7 @@ def test_revision_request_schema_fields():
         experiment_id="exp1", cycle_id="cyc1", round_number=2,
         source_draft_path="draft.json",
         source_draft_fingerprint="fp1", verification_fingerprint="fp2",
-        claims=claims, correctable_claim_ids=("c1",), transition_reason="AGENT07_CORRECTABLE_ISSUES",
+        claims=claims, correctable_claim_uids=("c1",), claim_identity_contract_version="LEGACY", transition_reason="AGENT07_CORRECTABLE_ISSUES",
     )
     assert request["source_draft_path"] == "draft.json"
     for key in ("schema_version", "experiment_id", "cycle_id", "round_number",
@@ -317,7 +317,7 @@ def test_multiple_sections():
         experiment_id="exp1", cycle_id="cyc1", round_number=1,
         source_draft_path="draft.json",
         source_draft_fingerprint="fp1", verification_fingerprint="fp2",
-        claims=claims, correctable_claim_ids=("c1", "c2"), transition_reason="AGENT07_CORRECTABLE_ISSUES",
+        claims=claims, correctable_claim_uids=("c1", "c2"), claim_identity_contract_version="LEGACY", transition_reason="AGENT07_CORRECTABLE_ISSUES",
     )
     sections = {issue["section_id"] for issue in request["issues"]}
     assert sections == {"intro", "results"}
@@ -331,7 +331,7 @@ def test_missing_source_draft_path_raises():
             experiment_id="exp1", cycle_id="cyc1", round_number=1,
             source_draft_path="",
             source_draft_fingerprint="fp1", verification_fingerprint="fp2",
-            claims=claims, correctable_claim_ids=("c1",), transition_reason="AGENT07_CORRECTABLE_ISSUES",
+            claims=claims, correctable_claim_uids=("c1",), claim_identity_contract_version="LEGACY", transition_reason="AGENT07_CORRECTABLE_ISSUES",
         )
     except ValueError as exc:
         assert "AGENT07_REVISION_REQUEST_MALFORMED" in str(exc)
@@ -347,7 +347,7 @@ def test_inconsistent_correctable_ids_raises():
             experiment_id="exp1", cycle_id="cyc1", round_number=1,
             source_draft_path="draft.json",
             source_draft_fingerprint="fp1", verification_fingerprint="fp2",
-            claims=claims, correctable_claim_ids=("c1", "c_nonexistent"),
+            claims=claims, correctable_claim_uids=("c1", "c_nonexistent"), claim_identity_contract_version="LEGACY",
             transition_reason="AGENT07_CORRECTABLE_ISSUES",
         )
     except ValueError as exc:
@@ -364,13 +364,13 @@ def test_issue_id_stable_regardless_of_order():
         experiment_id="exp1", cycle_id="cyc1", round_number=1,
         source_draft_path="draft.json",
         source_draft_fingerprint="fp1", verification_fingerprint="fp2",
-        claims=claims, correctable_claim_ids=("c1", "c2"), transition_reason="X",
+        claims=claims, correctable_claim_uids=("c1", "c2"), claim_identity_contract_version="LEGACY", transition_reason="X",
     )
     request_b = build_writer_revision_request(
         experiment_id="exp1", cycle_id="cyc1", round_number=1,
         source_draft_path="draft.json",
         source_draft_fingerprint="fp1", verification_fingerprint="fp2",
-        claims=list(reversed(claims)), correctable_claim_ids=("c2", "c1"), transition_reason="X",
+        claims=list(reversed(claims)), correctable_claim_uids=("c2", "c1"), claim_identity_contract_version="LEGACY", transition_reason="X",
     )
     ids_a = {i["claim_id"]: i["issue_id"] for i in request_a["issues"]}
     ids_b = {i["claim_id"]: i["issue_id"] for i in request_b["issues"]}
@@ -388,7 +388,7 @@ def test_severity_preserves_real_value():
         experiment_id="exp1", cycle_id="cyc1", round_number=1,
         source_draft_path="draft.json",
         source_draft_fingerprint="fp1", verification_fingerprint="fp2",
-        claims=claims, correctable_claim_ids=("c1", "c2", "c3"), transition_reason="X",
+        claims=claims, correctable_claim_uids=("c1", "c2", "c3"), claim_identity_contract_version="LEGACY", transition_reason="X",
     )
     severities = {i["claim_id"]: i["severity"] for i in request["issues"]}
     assert severities == {"c1": "low", "c2": "medium", "c3": "high"}
@@ -406,7 +406,7 @@ def test_requested_change_uses_real_proposal():
         experiment_id="exp1", cycle_id="cyc1", round_number=1,
         source_draft_path="draft.json",
         source_draft_fingerprint="fp1", verification_fingerprint="fp2",
-        claims=claims, correctable_claim_ids=("c1",), transition_reason="X",
+        claims=claims, correctable_claim_uids=("c1",), claim_identity_contract_version="LEGACY", transition_reason="X",
     )
     issue = request["issues"][0]
     assert issue["requested_change"] == "Reemplazar '50%' por '45%' según chunk c1."
@@ -420,7 +420,7 @@ def test_requested_change_fallback_marked_explicitly():
         experiment_id="exp1", cycle_id="cyc1", round_number=1,
         source_draft_path="draft.json",
         source_draft_fingerprint="fp1", verification_fingerprint="fp2",
-        claims=claims, correctable_claim_ids=("c1",), transition_reason="X",
+        claims=claims, correctable_claim_uids=("c1",), claim_identity_contract_version="LEGACY", transition_reason="X",
     )
     issue = request["issues"][0]
     assert issue["requested_change_is_fallback"] is True
@@ -435,7 +435,7 @@ def test_empty_issues_raises():
             experiment_id="exp1", cycle_id="cyc1", round_number=1,
             source_draft_path="draft.json",
             source_draft_fingerprint="fp1", verification_fingerprint="fp2",
-            claims=claims, correctable_claim_ids=(), transition_reason="X",
+            claims=claims, correctable_claim_uids=(), claim_identity_contract_version="LEGACY", transition_reason="X",
         )
     except ValueError as exc:
         assert "AGENT07_REVISION_REQUEST_MALFORMED" in str(exc)

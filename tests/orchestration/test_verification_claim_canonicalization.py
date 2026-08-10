@@ -238,7 +238,7 @@ def test_old_format_still_supported():
     claims = canonicalize_claims_for_transition(bundle)
     decision = classify_verification_transition(claims=claims, technical_status="COMPLETED", rounds_used=0, max_rounds=3)
     assert decision["action"] == "RETURN"
-    assert "S1_C1" in decision["correctable_claim_ids"]
+    assert "S1_C1" in decision["correctable_claim_uids"]
 
 
 @scenario("N11. Fail-closed: elegibilidad no determinable (estado de propuesta científica no contemplado) -> None, HALT_STAGE aguas abajo")

@@ -9,9 +9,11 @@ menudo se confunden:
 
 1. ``numeric_risk="HIGH"`` con presupuesto de RAG adicional disponible
    (``retrieval_possible=True``): el precheck agrega
-   ``QUANTITATIVE_COVERAGE_INCOMPLETE`` pero NO bloquea el juicio
-   científico — ``scientific_judgment_status`` sigue en ``"PENDING"``, el
-   LLM SÍ se invoca normalmente.
+   ``QUANTITATIVE_COVERAGE_INCOMPLETE`` a ``retrieval_reason_codes``
+   (NUNCA a ``deterministic_issue_codes`` -- ver corrección de
+   vocabulario más abajo) pero NO bloquea el juicio científico —
+   ``scientific_judgment_status`` sigue en ``"PENDING"``, el LLM SÍ se
+   invoca normalmente.
 2. ``numeric_risk="HIGH"`` SIN presupuesto de RAG adicional
    (``retrieval_possible=False``, ej. ``max_additional_retrieval_requests=0``):
    el precheck agrega ``UNSUPPORTED_NUMERIC_VALUE`` (terminal) y fuerza
@@ -117,7 +119,13 @@ def test_quantitative_high_risk_with_budget_not_blocked():
     # ("NOT_EVALUATED" por defecto hasta que el LLM se ejecute) -- la
     # señal real de si el juicio está bloqueado o no es
     # scientific_judgment_status, no este campo.
-    assert "QUANTITATIVE_COVERAGE_INCOMPLETE" in precheck["deterministic_issue_codes"]
+    # Corrección de vocabulario: QUANTITATIVE_COVERAGE_INCOMPLETE
+    # pertenece a RETRIEVAL_REASON_CODES, no a DETERMINISTIC_ISSUE_CODES
+    # -- vive en retrieval_reason_codes, y JAMÁS en
+    # deterministic_issue_codes (antes de la corrección, aparecía ahí y
+    # violaba el contrato terminal: TERMINAL_CONTRACT_UNKNOWN_CODE).
+    assert "QUANTITATIVE_COVERAGE_INCOMPLETE" in precheck["retrieval_reason_codes"]
+    assert "QUANTITATIVE_COVERAGE_INCOMPLETE" not in precheck["deterministic_issue_codes"]
     allowed = allowed_verdicts_for_claim(core_ctx, precheck)
     assert "PARTIALLY_SUPPORTED" in allowed  # el LLM SÍ puede emitir un veredicto real aquí
 
