@@ -274,6 +274,24 @@ class CycleState:
     status: str = "NOT_STARTED"
     last_return_reason: str | None = None
     unresolved_claims_count: int = 0
+    # Frontera legacy explícita para la identidad estable de claims (ver
+    # src/tools/draft_writing/claim_identity.py) -- NUNCA se infiere
+    # retroactivamente por similitud de texto. "STABLE_UID_V1" es el
+    # valor real para cualquier ciclo creado desde este cambio en
+    # adelante (el default del constructor). "LEGACY" es lo que
+    # from_dict() asigna explícitamente cuando el campo está AUSENTE en
+    # un pipeline_state.json persistido antes de este cambio -- la
+    # única señal usada es la presencia/ausencia real del campo en el
+    # JSON, nunca una heurística sobre el contenido.
+    claim_identity_contract_version: str = "STABLE_UID_V1"
+    # Registro de migración LEGACY -> STABLE_UID_V1, único y auditable --
+    # None en todos hasta que ocurre una migración real. Nunca se
+    # reescriben una vez poblados (una sola migración por ciclo).
+    claim_identity_migration_from: str | None = None
+    claim_identity_migration_to: str | None = None
+    claim_identity_migration_round: int | None = None
+    claim_identity_migration_decision_id: str | None = None
+    claim_identity_migration_mode: str | None = None
 
     _ALLOWED_STATUSES = frozenset(
         {
@@ -304,12 +322,20 @@ class CycleState:
         last_return_reason = _optional_text(
             self.last_return_reason, "CycleState.last_return_reason"
         )
+        contract_version = _required_text(
+            self.claim_identity_contract_version, "CycleState.claim_identity_contract_version"
+        )
+        if contract_version not in {"LEGACY", "STABLE_UID_V1"}:
+            raise ValueError(
+                f"CycleState.claim_identity_contract_version desconocido: {contract_version}."
+            )
 
         object.__setattr__(self, "rounds_used", rounds_used)
         object.__setattr__(self, "max_rounds", max_rounds)
         object.__setattr__(self, "status", status)
         object.__setattr__(self, "unresolved_claims_count", unresolved)
         object.__setattr__(self, "last_return_reason", last_return_reason)
+        object.__setattr__(self, "claim_identity_contract_version", contract_version)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -318,6 +344,12 @@ class CycleState:
             "status": self.status,
             "last_return_reason": self.last_return_reason,
             "unresolved_claims_count": self.unresolved_claims_count,
+            "claim_identity_contract_version": self.claim_identity_contract_version,
+            "claim_identity_migration_from": self.claim_identity_migration_from,
+            "claim_identity_migration_to": self.claim_identity_migration_to,
+            "claim_identity_migration_round": self.claim_identity_migration_round,
+            "claim_identity_migration_decision_id": self.claim_identity_migration_decision_id,
+            "claim_identity_migration_mode": self.claim_identity_migration_mode,
         }
 
     @classmethod
@@ -330,6 +362,16 @@ class CycleState:
             status=data.get("status", "NOT_STARTED"),
             last_return_reason=data.get("last_return_reason"),
             unresolved_claims_count=data.get("unresolved_claims_count", 0),
+            # Ausente en el JSON persistido -> LEGACY, explícito y
+            # determinista -- nunca "STABLE_UID_V1" por default aquí,
+            # aunque ese SÍ sea el default del constructor para un
+            # CycleState nuevo (ver arriba).
+            claim_identity_contract_version=data.get("claim_identity_contract_version", "LEGACY"),
+            claim_identity_migration_from=data.get("claim_identity_migration_from"),
+            claim_identity_migration_to=data.get("claim_identity_migration_to"),
+            claim_identity_migration_round=data.get("claim_identity_migration_round"),
+            claim_identity_migration_decision_id=data.get("claim_identity_migration_decision_id"),
+            claim_identity_migration_mode=data.get("claim_identity_migration_mode"),
         )
 
 

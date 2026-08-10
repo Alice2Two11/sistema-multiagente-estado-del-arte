@@ -54,6 +54,7 @@ from typing import Any, Mapping
 
 CANONICAL_CLAIM_FIELDS = (
     "claim_id",
+    "claim_uid",
     "section_id",
     "claim_text",
     "scientific_verdict",
@@ -81,6 +82,7 @@ def _canonicalize_from_claim_verification_records(bundle: Mapping[str, Any]) -> 
         claims.append(
             {
                 "claim_id": verification.get("claim_id"),
+                "claim_uid": verification.get("claim_uid") or "",
                 "section_id": record.get("section_id"),
                 "claim_text": verification.get("claim_text"),
                 "scientific_verdict": verification.get("scientific_verdict"),
@@ -207,6 +209,7 @@ def _canonicalize_from_claim_traceability_rows(bundle: Mapping[str, Any]) -> lis
         claims.append(
             {
                 "claim_id": claim_id,
+                "claim_uid": claim_row.get("claim_uid") or "",
                 "section_id": claim_row.get("section_id"),
                 "claim_text": claim_row.get("original_claim_text"),
                 "scientific_verdict": claim_row.get("source_verdict"),

@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from src.contracts.agent_result import AgentResult, ExecutionStatus
+from src.orchestration.decision_log_frontier import committed_predecessor_for_stage
 from src.state.fingerprints import sha256_file
 from src.state.state_store import StateStore
 from src.tools.verification.corrections import fingerprint_text
@@ -37,7 +38,8 @@ AGENT06_HANDOFF_REQUIRED_FIELDS = {
     "commit_status", "run_id", "experiment_id", "artifact_identity", "schema_version",
     "source_draft_fingerprint", "agent06_manifest_source_draft_fingerprint",
     "claim_verification_contexts", "expected_claim_ids", "claim_inventory_fingerprint",
-    "agent06_decision_id", "outline_mapping_fingerprint", "integration_metadata",
+    "agent06_decision_id", "outline_mapping_fingerprint", "claim_identity_migration_signal",
+    "integration_metadata",
 }
 
 def validate_agent06_verification_handoff_contract(value: Mapping[str, Any]) -> dict[str, Any]:
@@ -47,6 +49,7 @@ def validate_agent06_verification_handoff_contract(value: Mapping[str, Any]) -> 
     for key in ("run_id","experiment_id","artifact_identity","schema_version","agent06_decision_id"):
         if not isinstance(out[key],str) or not out[key].strip(): raise ValueError(f"AGENT07_AGENT06_HANDOFF_FIELD_INVALID:{key}")
     if out["commit_status"] != "COMMITTED": raise ValueError("AGENT07_AGENT06_HANDOFF_NOT_COMMITTED")
+    if not isinstance(out["claim_identity_migration_signal"], bool): raise ValueError("AGENT07_AGENT06_HANDOFF_FIELD_INVALID:claim_identity_migration_signal")
     for key in ("source_draft_fingerprint","claim_inventory_fingerprint","outline_mapping_fingerprint"):
         v=out[key]
         if not isinstance(v,str) or len(v)!=64 or any(c not in "0123456789abcdef" for c in v): raise ValueError(f"AGENT07_AGENT06_HANDOFF_FINGERPRINT_INVALID:{key}")
@@ -93,17 +96,44 @@ def _artifact_basename(ref: Any) -> str:
     return Path(ref.path).name
 
 
-def resolve_committed_agent06_artifacts(*, store: StateStore, stage_name: str) -> tuple[Any, AgentResult, dict[str, Path]]:
-    """Resolve only the exact AgentResult committed for the exact Agent 06 stage."""
+def resolve_committed_agent06_artifacts(
+    *, store: StateStore, stage_name: str, target_stage: str = "07_agente_verificador"
+) -> tuple[Any, AgentResult, dict[str, Path], str]:
+    """Resolve only the exact AgentResult committed for the exact Agent 06 stage.
+
+    Antes: leía ``state.stages[stage_name]`` (el ``StageState`` VIGENTE)
+    y ``[e for e in decision_log if e.stage==stage_name][-1]`` (la
+    última entrada CRONOLÓGICA para esa etapa) -- ambos pueden reflejar
+    una ejecución espuria posterior a un ``HALT_STAGE`` terminal ya
+    comprometido en OTRA etapa (ej. 07), que sobrescribe el
+    ``StageState`` de 06 y aparece como su entrada más reciente en el
+    log, aunque nunca fue una continuación causal legítima de nada.
+
+    Corrección posterior (parche 11): se reemplazó esa lectura por
+    ``authoritative_decision_log_entry_for_stage`` -- pero esa función
+    responde una pregunta DISTINTA ("¿cuál es el estado terminal
+    VIGENTE de 06, para reconocer un restart?"), no la que hace falta
+    aquí. Si 06 tuvo una ejecución espuria de OTRA naturaleza (ej.
+    ``06/HALT_STAGE`` que aparece después de que 07 YA había alcanzado
+    su propio ``HALT_STAGE`` terminal, sin ninguna transición que
+    señalara esa reejecución) esa función seguía devolviendo el
+    espurio como "vigente" -- correcto para reconocer un restart, pero
+    equivocado para resolver la dependencia real que habilitó a 07.
+
+    Ahora: se usa ``committed_predecessor_for_stage`` -- responde la
+    pregunta correcta para un hand-off upstream: "¿cuál fue el ÚLTIMO
+    commit de ``stage_name`` que REALMENTE avanzó
+    (``COMPLETED``/``ADVANCE``) hacia ``target_stage``?" -- excluye por
+    diseño cualquier entrada posterior que no esté precedida por esa
+    transición causal exacta, sin importar si es "la más reciente"
+    cronológicamente."""
+
     state=store.load()
     if stage_name not in state.stages:
         raise ValueError("AGENT07_AGENT06_STAGE_NOT_FOUND")
-    if state.stages[stage_name].execution_status != ExecutionStatus.COMPLETED:
-        raise ValueError("AGENT07_AGENT06_STAGE_NOT_COMMITTED")
-    logs=[x for x in state.decision_log if x.stage==stage_name and x.agent==stage_name]
-    if not logs:
+    log = committed_predecessor_for_stage(state.decision_log, predecessor=stage_name, target=target_stage)
+    if log is None:
         raise ValueError("AGENT07_AGENT06_COMMIT_LOG_NOT_FOUND")
-    log=logs[-1]
     result=AgentResult.from_dict(log.result)
     if result.execution_status != ExecutionStatus.COMPLETED:
         raise ValueError("AGENT07_AGENT06_RESULT_NOT_COMPLETED")
@@ -117,7 +147,7 @@ def resolve_committed_agent06_artifacts(*, store: StateStore, stage_name: str) -
         if not path.is_file(): raise ValueError(f"AGENT07_AGENT06_ARTIFACT_MISSING:{name}")
         if sha256_file(path)!=ref.hash: raise ValueError(f"AGENT07_AGENT06_ARTIFACT_HASH_MISMATCH:{name}")
         paths[name]=path
-    return state,result,paths
+    return state,result,paths,log.decision_id
 
 
 def validate_agent07_experiment_compatibility(*, active_config: Mapping[str,Any], agent07_config: Mapping[str,Any], experiment_paths: Mapping[str,str]) -> None:
@@ -178,8 +208,7 @@ def build_agent07_input_from_committed_agent06(*, store: StateStore, stage_name:
     """Build Agent 07 contexts only from the exact committed Agent 06 result and the committed outline authorization mapping."""
     for name,value in (("agent07_config",agent07_config),("policy_versions",policy_versions),("schema_versions",schema_versions),("experiment_paths",experiment_paths)):
         if not isinstance(value,Mapping): raise ValueError(f"AGENT07_AGENT06_{name.upper()}_INVALID")
-    state,result,paths=resolve_committed_agent06_artifacts(store=store,stage_name=stage_name)
-    agent06_decision=next(x.decision_id for x in reversed(state.decision_log) if x.stage==stage_name)
+    state,result,paths,agent06_decision=resolve_committed_agent06_artifacts(store=store,stage_name=stage_name)
     mapping_path=Path(outline_paper_mapping_path)
     if not mapping_path.is_file(): raise ValueError("AGENT07_OUTLINE_MAPPING_MISSING")
     mapping_rows=_read_csv(mapping_path)
@@ -230,7 +259,7 @@ def build_agent07_input_from_committed_agent06(*, store: StateStore, stage_name:
             if key in inventory: raise ValueError(f"AGENT07_AGENT06_CLAIM_ID_DUPLICATE:{sid}:{cid}")
             if cid in global_claim_ids: raise ValueError(f"AGENT07_AGENT06_GLOBAL_CLAIM_ID_DUPLICATE:{cid}")
             global_claim_ids.add(cid)
-            inventory[key]={"claim_id":cid,"section_id":sid,"claim_text":text,"inventory_position":index,"section_title":str(section_record.get("section_title") or "").strip(),"source_free_organizational_section":bool(section_record.get("source_free_organizational_section") is True or (isinstance(section_record.get("section_validation"),Mapping) and section_record.get("section_validation",{}).get("source_free_organizational_section") is True)),"supporting_citations":tuple(claim.get("supporting_citations",()) or ())}
+            inventory[key]={"claim_id":cid,"claim_uid":str(claim.get("claim_uid") or ""),"claim_version":claim.get("claim_version"),"section_id":sid,"claim_text":text,"inventory_position":index,"section_title":str(section_record.get("section_title") or "").strip(),"source_free_organizational_section":bool(section_record.get("source_free_organizational_section") is True or (isinstance(section_record.get("section_validation"),Mapping) and section_record.get("section_validation",{}).get("source_free_organizational_section") is True)),"supporting_citations":tuple(claim.get("supporting_citations",()) or ())}
     if not inventory: raise ValueError("AGENT07_AGENT06_NO_CLAIM_INVENTORY")
     evidence_claim_keys=set(raw_by_claim)
     unknown_evidence=sorted(evidence_claim_keys-set(inventory))
@@ -255,14 +284,35 @@ def build_agent07_input_from_committed_agent06(*, store: StateStore, stage_name:
         cfp=fingerprint_text(text);sfp=fingerprint_text(section)
         evidence=tuple(sorted(raw_by_claim.get((sid,cid),{}).values(),key=lambda x:x["evidence_id"]))
         contexts.append({
-          "claim_id":cid,"claim_id_origin":"inherited_agent06","section_id":sid,"section_title":item["section_title"],"original_claim_text":text,"section_text":section,"supporting_citations":item["supporting_citations"],"source_free_organizational_section":item["source_free_organizational_section"],
+          "claim_id":cid,"claim_uid":item.get("claim_uid") or "","claim_id_origin":"inherited_agent06","section_id":sid,"section_title":item["section_title"],"original_claim_text":text,"section_text":section,"supporting_citations":item["supporting_citations"],"source_free_organizational_section":item["source_free_organizational_section"],
           "claim_span_in_section":{"coordinate_base":"SECTION_TEXT","coordinate_system":"PYTHON_CODEPOINT_OFFSETS","base_text_fingerprint":sfp,"start":start,"end":end,"text":text},
           "claim_fingerprint":cfp,"section_fingerprint":sfp,"eligible_evidence":evidence,
           "authorized_source_filenames":tuple(sorted(allowed_by_section.get(sid,set()))),
           "source_draft_fingerprint":source_draft_fingerprint,
           "numeric_risk":numeric.get((sid,cid)),"numeric_risk_status":"EVALUATED" if (sid,cid) in numeric else "NOT_AVAILABLE",
-          "field_provenance":{"claim_id":"state_of_art_draft.json:sections[].claims","claim_id_origin":"committed Agent06 inventory","section_id":"state_of_art_draft.json:sections[].section_id","section_title":"state_of_art_draft.json:sections[].section_title","original_claim_text":"state_of_art_draft.json:sections[].claims","supporting_citations":"state_of_art_draft.json:sections[].claims[].supporting_citations","source_free_organizational_section":"state_of_art_draft.json:section_validation","section_text":"draft_sections.csv|state_of_art_draft.json","claim_span_in_section":"explicit artifact coordinates|unique exact location","eligible_evidence":"draft_claim_evidence.csv|draft_rag_evidence.csv + outline_paper_mapping.csv authorization","authorized_source_filenames":"outline_paper_mapping.csv","numeric_risk":"numeric_hallucination_check.csv" if (sid,cid) in numeric else "ABSENT","source_draft_fingerprint":"draft_generation_manifest.json|canonical draft fingerprint"},
+          "field_provenance":{"claim_id":"state_of_art_draft.json:sections[].claims","claim_uid":"state_of_art_draft.json:sections[].claims[].claim_uid","claim_id_origin":"committed Agent06 inventory","section_id":"state_of_art_draft.json:sections[].section_id","section_title":"state_of_art_draft.json:sections[].section_title","original_claim_text":"state_of_art_draft.json:sections[].claims","supporting_citations":"state_of_art_draft.json:sections[].claims[].supporting_citations","source_free_organizational_section":"state_of_art_draft.json:section_validation","section_text":"draft_sections.csv|state_of_art_draft.json","claim_span_in_section":"explicit artifact coordinates|unique exact location","eligible_evidence":"draft_claim_evidence.csv|draft_rag_evidence.csv + outline_paper_mapping.csv authorization","authorized_source_filenames":"outline_paper_mapping.csv","numeric_risk":"numeric_hallucination_check.csv" if (sid,cid) in numeric else "ABSENT","source_draft_fingerprint":"draft_generation_manifest.json|canonical draft fingerprint"},
         })
     if not contexts: raise ValueError("AGENT07_AGENT06_NO_CLAIM_CONTEXTS")
-    handoff={"commit_status":"COMMITTED","run_id":state.identity.run_id,"experiment_id":state.identity.experiment_id,"artifact_identity":str(manifest.get("artifact_identity") or agent06_decision),"schema_version":state.identity.schema_version,"source_draft_fingerprint":source_draft_fingerprint,"agent06_manifest_source_draft_fingerprint":str(declared) if declared else None,"claim_verification_contexts":tuple(contexts),"expected_claim_ids":tuple(cid for _,cid in sorted(inventory)),"claim_inventory_fingerprint":_sha256_json(tuple(inventory[k] for k in sorted(inventory))),"agent06_decision_id":agent06_decision,"outline_mapping_fingerprint":sha256_file(mapping_path),"integration_metadata":{"agent07_config_fingerprint":_sha256_json(agent07_config),"policy_versions":dict(policy_versions),"schema_versions":dict(schema_versions),"experiment_paths":dict(experiment_paths)}}
+    # claim_identity_migration_signal: EXCLUSIVAMENTE automático, nunca
+    # configurado a mano por experimento. True únicamente cuando las
+    # tres condiciones se cumplen a la vez:
+    #   1) el ciclo escrito tiene declarado el contrato LEGACY (no
+    #      None, no ya STABLE_UID_V1 -- máximo una vez, nunca se vuelve
+    #      a emitir tras la migración real).
+    #   2) TODOS los claims publicados en este draft comprometido tienen
+    #      claim_version válido (>=1) -- confirma que se produjeron
+    #      realmente vía el mecanismo de identidad (resolve_claim_
+    #      identity), no que alguien les puso un claim_uid a mano.
+    #   3) TODOS tienen además claim_uid no vacío.
+    # Ninguna reconstrucción por similitud, ninguna configuración manual.
+    declared_cycle = state.cycles.get("writer_verifier")
+    declared_contract_version = declared_cycle.claim_identity_contract_version if declared_cycle is not None else None
+    all_claims_stable = bool(inventory) and all(
+        bool(item.get("claim_uid"))
+        and isinstance(item.get("claim_version"), int)
+        and item.get("claim_version") >= 1
+        for item in inventory.values()
+    )
+    claim_identity_migration_signal = declared_contract_version == "LEGACY" and all_claims_stable
+    handoff={"commit_status":"COMMITTED","run_id":state.identity.run_id,"experiment_id":state.identity.experiment_id,"artifact_identity":str(manifest.get("artifact_identity") or agent06_decision),"schema_version":state.identity.schema_version,"source_draft_fingerprint":source_draft_fingerprint,"agent06_manifest_source_draft_fingerprint":str(declared) if declared else None,"claim_verification_contexts":tuple(contexts),"expected_claim_ids":tuple(cid for _,cid in sorted(inventory)),"claim_inventory_fingerprint":_sha256_json(tuple(inventory[k] for k in sorted(inventory))),"agent06_decision_id":agent06_decision,"outline_mapping_fingerprint":sha256_file(mapping_path),"claim_identity_migration_signal":claim_identity_migration_signal,"integration_metadata":{"agent07_config_fingerprint":_sha256_json(agent07_config),"policy_versions":dict(policy_versions),"schema_versions":dict(schema_versions),"experiment_paths":dict(experiment_paths)}}
     return validate_agent06_verification_handoff_contract(handoff)

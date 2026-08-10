@@ -134,15 +134,17 @@ def _build_evaluation_agent_result(
     exception: Exception | None,
     pipeline_result: dict[str, Any] | None,
     output_artifacts: dict[str, Any] | None = None,
+    pipeline_outcome_metadata: dict[str, Any] | None = None,
 ) -> AgentResult:
     now = _now()
+    outcome_metadata = dict(pipeline_outcome_metadata or {"pipeline_outcome": "SUCCESS"})
 
     if exception is not None:
         return AgentResult(
             execution_status=ExecutionStatus.FAILED,
             quality_status=QualityStatus.REJECTED,
             decision=DecisionInfo(code="EVALUATION_FAILED", rationale=str(exception)),
-            quality_metrics={"technical": {}, "scientific": {}},
+            quality_metrics={"technical": dict(outcome_metadata), "scientific": {}},
             warnings=(
                 AgentWarning(
                     code=type(exception).__name__,
@@ -193,7 +195,7 @@ def _build_evaluation_agent_result(
             rationale=final_validation["evaluation_validation_report"]["factual_consistency_status"],
         ),
         quality_metrics={
-            "technical": {},
+            "technical": dict(outcome_metadata),
             "scientific": {
                 row["metric"]: row["value"] for row in pipeline_result["final_selected_metrics"]
             },
@@ -252,6 +254,7 @@ def _run_evaluation_stage(
     backup_root = Path(kwargs.pop("backup_root"))
     openai_model_for_signature = kwargs.pop("_openai_model", "")
     upstream_fingerprint = kwargs.pop("upstream_fingerprint", None)
+    pipeline_outcome_metadata = kwargs.pop("_pipeline_outcome_metadata", {"pipeline_outcome": "SUCCESS"})
 
     started_at = _now()
 
@@ -285,7 +288,8 @@ def _run_evaluation_stage(
         )
     except Exception as exc:  # noqa: BLE001 - excepción técnica real, no se silencia
         result = _build_evaluation_agent_result(
-            attempt_number=attempt_number, started_at=started_at, exception=exc, pipeline_result=None
+            attempt_number=attempt_number, started_at=started_at, exception=exc, pipeline_result=None,
+            pipeline_outcome_metadata=pipeline_outcome_metadata,
         )
         prepared = store.prepare_execution(
             target_stage=EVALUATION_STAGE_NAME, intended_action="EXECUTE_EVALUATION", attempt_number=attempt_number
@@ -386,6 +390,7 @@ def _run_evaluation_stage(
         evaluation_manifest = {
             "stage": EVALUATION_STAGE_NAME,
             "created_at": _now(),
+            "pipeline_outcome": pipeline_outcome_metadata,
             "experiment_id": kwargs["experiment_id"],
             "source_stage": kwargs["source_stage"],
             "reverification_performed": kwargs["reverification_performed"],
@@ -444,10 +449,12 @@ def _run_evaluation_stage(
             exception=None,
             pipeline_result=pipeline_result,
             output_artifacts=output_artifacts,
+            pipeline_outcome_metadata=pipeline_outcome_metadata,
         )
     except Exception as exc:  # noqa: BLE001 - ver docstring del módulo: no se silencia, se registra
         result = _build_evaluation_agent_result(
-            attempt_number=attempt_number, started_at=started_at, exception=exc, pipeline_result=None
+            attempt_number=attempt_number, started_at=started_at, exception=exc, pipeline_result=None,
+            pipeline_outcome_metadata=pipeline_outcome_metadata,
         )
 
     store.persist_agent_result(prepared.decision_id, result)

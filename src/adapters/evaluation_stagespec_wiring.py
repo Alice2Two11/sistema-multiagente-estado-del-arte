@@ -45,10 +45,44 @@ def build_execution_for_stagespec(project_dir: str | Path, attempt_number: int =
             "active_experiment.json['evaluation_policy'] debe ser un diccionario no vacío."
         )
 
+    from src.orchestration.pipeline_orchestrator import ensure_pipeline_state
+
+    store = ensure_pipeline_state(project_dir)
+
+    # pipeline_outcome (SUCCESS | PARTIAL_HALT): resuelto fail-closed
+    # ANTES de tocar cualquier artefacto de 07 -- si 07 tuvo un fallo
+    # técnico real, o si es un HALT_STAGE científico sin autorización
+    # explícita, esto lanza y 08 nunca se ejecuta. "allow_partial_halt_
+    # evaluation" es un booleano EXPLÍCITO en evaluation_policy -- nunca
+    # se activa por defecto ni se infiere del estado de 07.
+    from src.adapters.evaluation_pipeline_outcome import resolve_pipeline_outcome_for_evaluation
+
+    pipeline_outcome_metadata = resolve_pipeline_outcome_for_evaluation(
+        store=store,
+        allow_partial_halt=bool(evaluation_policy.get("allow_partial_halt_evaluation", False)),
+    )
+
     dir_verify = outputs / "06_verification_traceability"
     dir_evaluation = outputs / "07_evaluation"
-    draft_json_path = outputs / "05_draft" / "state_of_art_draft.json"
-    draft_md_path = outputs / "05_draft" / "state_of_art_draft.md"
+
+    # source_draft_fingerprint (definición canónica única 06->07->08):
+    # el draft canónico NO vive necesariamente en la ruta fija
+    # "05_draft/state_of_art_draft.json" -- una migración técnica (ej.
+    # el bootstrap de identidad, patch19) publica una NUEVA copia
+    # comprometida en un directorio propio, sin tocar la original. La
+    # ÚNICA fuente de verdad de "qué draft comprometió 06 realmente"
+    # es resolve_committed_agent06_artifacts() -- la MISMA función que
+    # ya usa 07 (vía build_agent07_input_from_committed_agent06) para
+    # resolver su propio source_draft_fingerprint. Usar una ruta fija
+    # aquí, en vez de esta resolución causal, es lo que producía
+    # AGENT08_SOURCE_DRAFT_FINGERPRINT_MISMATCH tras cualquier
+    # publicación que no fuera la escritura original de 06 -- 08 hasheaba
+    # un archivo distinto al que 07 realmente verificó.
+    from src.adapters.agent06_verification_handoff import resolve_committed_agent06_artifacts
+
+    _, _, agent06_paths, _ = resolve_committed_agent06_artifacts(store=store, stage_name="06_agente_redactor")
+    draft_json_path = agent06_paths["state_of_art_draft.json"]
+    draft_md_path = agent06_paths["state_of_art_draft.md"]
 
     from src.adapters.evaluation_upstream import resolve_agent08_upstream_input
 
@@ -66,9 +100,6 @@ def build_execution_for_stagespec(project_dir: str | Path, attempt_number: int =
     # antes de la primera ejecución). Pero si 07 SÍ está comprometido y el
     # fingerprint falta o es ilegible, eso es un error real -- no se
     # degrada a None en silencio.
-    from src.orchestration.pipeline_orchestrator import ensure_pipeline_state
-
-    store = ensure_pipeline_state(project_dir)
     committed_agent07 = store.load().stages.get("07_agente_verificador")
     if committed_agent07 is None:
         upstream_fingerprint = None
@@ -135,4 +166,5 @@ def build_execution_for_stagespec(project_dir: str | Path, attempt_number: int =
         "numeric_check_output_dir": str(dir_evaluation),
         "backup_root": str(outputs / ".evaluation_backups"),
         "_openai_model": openai_model,
+        "_pipeline_outcome_metadata": pipeline_outcome_metadata,
     }

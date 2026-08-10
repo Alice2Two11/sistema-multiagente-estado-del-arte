@@ -216,6 +216,7 @@ def build_claim_verification_context_from_agent06_handoff(
     if not isinstance(handoff_context,Mapping): raise ValueError("AGENT07_CONTEXT_ADAPTER_HANDOFF_NOT_MAPPING")
     source=deepcopy(dict(handoff_context))
     claim_id=str(source.get("claim_id") or "").strip(); section_id=str(source.get("section_id") or "").strip()
+    claim_uid=str(source.get("claim_uid") or "").strip()  # "" para claims legacy sin identidad estable todavía
     claim_text=str(source.get("original_claim_text") or "").strip()
     section_title=str(source.get("section_title") or "").strip()
     if not claim_id or not section_id or not claim_text: raise ValueError("AGENT07_CONTEXT_ADAPTER_IDENTITY_MISSING")
@@ -262,7 +263,7 @@ def build_claim_verification_context_from_agent06_handoff(
         "structural_coverage_improved_this_delta": bool(retrieved), "retrieval_mode":"SECTION_SCOPED",
     }
     context={
-        "claim_id":claim_id,"claim_id_origin":str(source.get("claim_id_origin") or "inherited_agent06"),
+        "claim_id":claim_id,"claim_uid":claim_uid,"claim_id_origin":str(source.get("claim_id_origin") or "inherited_agent06"),
         "section_id":section_id,"section_title":section_title,"claim_text":claim_text,
         "claim_type":claim_type,"verification_intensity":intensity,
         "supporting_citations":_supporting_citations(source,evidence),

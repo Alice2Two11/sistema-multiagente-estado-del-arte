@@ -1038,6 +1038,12 @@ def build_chat_clients(
         configuration.extraction_policy
     )
 
+    json_model_kwargs = {
+        "response_format": {
+            "type": "json_object",
+        }
+    }
+
     main_llm = factory(
         model=configuration.openai_model,
         temperature=float(
@@ -1046,7 +1052,9 @@ def build_chat_clients(
             ]
         ),
         api_key=api_key,
+        model_kwargs=json_model_kwargs,
     )
+
     repair_llm = factory(
         model=configuration.openai_model,
         temperature=float(
@@ -1055,7 +1063,9 @@ def build_chat_clients(
             ]
         ),
         api_key=api_key,
+        model_kwargs=json_model_kwargs,
     )
+
     return main_llm, repair_llm
 
 

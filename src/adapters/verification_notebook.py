@@ -263,8 +263,46 @@ def _extract_claims_for_transition(runtime_result: Agent07RuntimeResult) -> list
     return canonicalize_claims_for_transition(runtime_result.provisional_bundle)
 
 
+def _agent07_has_classifiable_bundle(runtime_result: Agent07RuntimeResult) -> bool:
+    """Determina si el runtime de 07 produjo un bundle real sobre el que
+    vale la pena intentar clasificación científica.
+
+    ``runtime_status`` puede ser ``BLOCKED`` por dos motivos distintos
+    (ver ``_expected_candidate_payload_names``, que ya documentaba esta
+    distinción sin que el resto del código la respetara):
+
+    1. Bloqueo OPERATIVO temprano: ni ``provisional_bundle`` ni
+       ``multi_proposal_resolution_result`` existen -- no hay nada que
+       clasificar. Esto sigue siendo un fallo técnico real.
+    2. Bloqueo CIENTÍFICO: el runtime sí completó la verificación y la
+       resolución de propuestas, y produjo un bundle real -- pero alguna
+       etapa posterior (ej. agregación) marcó ``runtime_status="BLOCKED"``.
+       En este caso el bundle SÍ es clasificable: contiene claims reales
+       con veredictos y elegibilidad de corrección reales, exactamente
+       igual que un resultado ``COMPLETED``/``PARTIAL``.
+
+    Antes de esta corrección, el caso 2 se trataba igual que el caso 1
+    (nunca se intentaba clasificar, y el commit se rechazaba siempre) --
+    eso convertía un resultado científico real (potencialmente
+    corregible vía RETURN, o cerrable vía HALT_STAGE informado) en un
+    ``RuntimeError`` técnico sin clasificar. Esta función es el único
+    punto de verdad que usan ``_classify_agent07_transition``,
+    ``_build_agent07_result`` y ``_validate_execution_for_commit`` para
+    mantener el mismo criterio en los tres lugares.
+    """
+
+    if runtime_result.runtime_status in {"COMPLETED", "PARTIAL"}:
+        return True
+    return (
+        runtime_result.runtime_status == "BLOCKED"
+        and runtime_result.provisional_bundle is not None
+        and runtime_result.multi_proposal_resolution_result is not None
+    )
+
+
 def _classify_agent07_transition(
-    runtime_result: Agent07RuntimeResult, *, rounds_used: int, max_rounds: int
+    runtime_result: Agent07RuntimeResult, *, rounds_used: int, max_rounds: int,
+    declared_contract_version: str | None = None, migration_signal: bool = False,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """Paso 1 (clasificación): SOLO deriva la acción real
     (ADVANCE/RETURN/HALT_STAGE) vía ``classify_verification_transition``.
@@ -275,7 +313,7 @@ def _classify_agent07_transition(
 
     from src.tools.verification.writer_revision_cycle import classify_verification_transition
 
-    completed = runtime_result.runtime_status in {"COMPLETED", "PARTIAL"}
+    completed = _agent07_has_classifiable_bundle(runtime_result)
     if completed and runtime_result.provisional_bundle is not None:
         claims = _extract_claims_for_transition(runtime_result)
         decision = classify_verification_transition(
@@ -283,14 +321,19 @@ def _classify_agent07_transition(
             technical_status="COMPLETED",
             rounds_used=rounds_used,
             max_rounds=max_rounds,
+            declared_contract_version=declared_contract_version,
+            migration_signal=migration_signal,
         )
     else:
         claims = []
         decision = {
             "action": "HALT_STAGE",
             "reason_code": f"AGENT07_{runtime_result.runtime_status}",
-            "correctable_claim_ids": (),
-            "blocking_claim_ids": (),
+            "correctable_claim_uids": (),
+            "blocking_claim_uids": (),
+            "claim_identity_contract_version": None,
+            "claim_identity_contract_version_newly_inferred": False,
+            "claim_identity_contract_migrated": False,
             "rationale": "Fallo técnico o artefactos incompletos en el runtime de 07.",
         }
     return claims, decision
@@ -326,7 +369,8 @@ def _build_optional_writer_revision_request(
         source_draft_fingerprint=source_draft_fingerprint,
         verification_fingerprint=verification_fingerprint,
         claims=claims,
-        correctable_claim_ids=decision["correctable_claim_ids"],
+        correctable_claim_uids=decision["correctable_claim_uids"],
+        claim_identity_contract_version=decision["claim_identity_contract_version"],
         transition_reason=decision["reason_code"],
     )
 
@@ -344,7 +388,7 @@ def _build_agent07_result(
     cuando corresponde, porque ``refs`` se arma después de saber si el
     paso 2 produjo un request)."""
 
-    completed = runtime_result.runtime_status in {"COMPLETED", "PARTIAL"}
+    completed = _agent07_has_classifiable_bundle(runtime_result)
     action = decision["action"]
     now = datetime.now(timezone.utc).isoformat()
 
@@ -477,13 +521,18 @@ def validate_agent07_artifact_manifest_contract(value: Agent07ArtifactManifest |
 
 def execute_prepared_agent07(*, store: StateStore, prepared: PreparedAgent07Execution, dependencies: VerificationRuntimeDependencies) -> ExecutedAgent07Execution:
     validate_prepared_agent07_execution_contract(prepared)
-    runtime_result=run_agent07_in_memory(prepared.runtime_input,dependencies=dependencies); validate_agent07_runtime_result_contract(runtime_result)
+    from src.tools.verification.validation import aggregation_diagnostic_sink
+    _staging_dir = Path(prepared.runtime_input.experiment_paths.get("agent07_staging_dir", prepared.runtime_input.experiment_paths["root"] + "/.agent07_staging")) / prepared.decision_id
+    _diagnostic_path = _staging_dir / "aggregation_invalid_elements_debug.json"
+    with aggregation_diagnostic_sink(_diagnostic_path):
+        runtime_result=run_agent07_in_memory(prepared.runtime_input,dependencies=dependencies); validate_agent07_runtime_result_contract(runtime_result)
     output_dir=Path(prepared.runtime_input.experiment_paths.get("agent07_output_dir",prepared.runtime_input.experiment_paths["root"]+"/07_verification"))
 
     state_for_cycle = store.load()
     cycle = state_for_cycle.cycles.get("writer_verifier")
     rounds_used = cycle.rounds_used if cycle is not None else 0
     max_rounds = cycle.max_rounds if cycle is not None else 3
+    declared_contract_version = cycle.claim_identity_contract_version if cycle is not None else None
     # source_draft_path: no viene directo en committed_agent06_output (solo
     # guarda experiment_id/source_draft_fingerprint) -- se reconstruye con
     # la misma convención real de draft_writing_runtime.py
@@ -503,11 +552,72 @@ def execute_prepared_agent07(*, store: StateStore, prepared: PreparedAgent07Exec
         # Bloqueo operativo temprano: no hay bundle que clasificar, no hay
         # paso 1/2 real -- HALT_STAGE fijo, sin writer_revision_request.
         payloads={"agent07_runtime_report.json":_json_bytes(runtime_result.to_dict()),OPERATIONAL_AUDIT_NAME:_json_bytes(runtime_result.blocked_runtime_audit_record)}
-        decision={"action":"HALT_STAGE","reason_code":f"AGENT07_{runtime_result.runtime_status}","correctable_claim_ids":(),"blocking_claim_ids":(),"rationale":"Fallo técnico o artefactos incompletos en el runtime de 07."}
+        decision={"action":"HALT_STAGE","reason_code":f"AGENT07_{runtime_result.runtime_status}","correctable_claim_uids":(),"blocking_claim_uids":(),"claim_identity_contract_version":None,"claim_identity_contract_version_newly_inferred":False,"claim_identity_contract_migrated":False,"rationale":"Fallo técnico o artefactos incompletos en el runtime de 07."}
         revision_request=None
     else:
+        # Señal EXPLÍCITA de 06 (nunca inferida de la mera presencia de
+        # claim_uid): 06 declara en su propio output comprometido que
+        # este round produce claims deliberadamente bajo STABLE_UID_V1
+        # -- única fuente que autoriza una migración LEGACY->STABLE_UID_V1.
+        migration_signal = bool(
+            prepared.runtime_input.committed_agent06_output.get("claim_identity_migration_signal", False)
+        )
         # Paso 1: clasificación (ADVANCE/RETURN/HALT_STAGE real).
-        claims, decision = _classify_agent07_transition(runtime_result, rounds_used=rounds_used, max_rounds=max_rounds)
+        claims, decision = _classify_agent07_transition(
+            runtime_result, rounds_used=rounds_used, max_rounds=max_rounds,
+            declared_contract_version=declared_contract_version, migration_signal=migration_signal,
+        )
+        # Frontera real (primera vez que este ciclo ve claims, sin
+        # contrato declarado todavía): el contrato recién inferido se
+        # persiste AHORA, antes de que el orquestador procese la
+        # transición -- así, si la decisión es RETURN, apply_return_
+        # with_cycle (decision_engine.py) encuentra un CycleState YA
+        # CORRECTO (con claim_identity_contract_version ya resuelto) en
+        # vez de crear uno nuevo con un valor por defecto sin validar
+        # contra los claims reales de esta ronda.
+        if decision.get("claim_identity_contract_version_newly_inferred") and cycle is None:
+            from src.state.pipeline_state import CycleState
+
+            fresh_cycle = CycleState(
+                max_rounds=max_rounds,
+                claim_identity_contract_version=decision["claim_identity_contract_version"],
+            )
+            updated_cycles = dict(state_for_cycle.cycles)
+            updated_cycles["writer_verifier"] = fresh_cycle
+            from dataclasses import replace as _dc_replace
+            from datetime import datetime as _dt, timezone as _tz
+
+            state_for_cycle = _dc_replace(
+                state_for_cycle, cycles=updated_cycles,
+                identity=_dc_replace(state_for_cycle.identity, updated_at=_dt.now(_tz.utc).isoformat()),
+            )
+            store.save(state_for_cycle)
+        elif decision.get("claim_identity_contract_migrated") and cycle is not None:
+            # Migración real LEGACY -> STABLE_UID_V1 (una sola vez, con
+            # señal explícita ya validada por classify_verification_
+            # transition). Se persiste el registro completo pedido:
+            # from/to/round/decision_id/migration_mode -- nunca se
+            # reescriben rondas anteriores, nunca se reconstruyen UIDs
+            # históricos.
+            from dataclasses import replace as _dc_replace
+            from datetime import datetime as _dt, timezone as _tz
+
+            migrated_cycle = _dc_replace(
+                cycle,
+                claim_identity_contract_version="STABLE_UID_V1",
+                claim_identity_migration_from="LEGACY",
+                claim_identity_migration_to="STABLE_UID_V1",
+                claim_identity_migration_round=rounds_used + 1,
+                claim_identity_migration_decision_id=prepared.decision_id,
+                claim_identity_migration_mode="EXPLICIT_SIGNAL_FROM_06",
+            )
+            updated_cycles = dict(state_for_cycle.cycles)
+            updated_cycles["writer_verifier"] = migrated_cycle
+            state_for_cycle = _dc_replace(
+                state_for_cycle, cycles=updated_cycles,
+                identity=_dc_replace(state_for_cycle.identity, updated_at=_dt.now(_tz.utc).isoformat()),
+            )
+            store.save(state_for_cycle)
         # Paso 2: writer_revision_request opcional -- se conoce ANTES de
         # construir los payloads, precisamente para poder incluirlo
         # condicionalmente en el manifest (punto 1 del pedido: nunca por
@@ -629,11 +739,20 @@ def validate_executed_agent07_execution_contract(value: ExecutedAgent07Execution
 
 
 def _validate_execution_for_commit(executed: ExecutedAgent07Execution) -> None:
-    if executed.runtime_result.runtime_status == "BLOCKED":
+    runtime_result = executed.runtime_result
+    if runtime_result.runtime_status == "BLOCKED":
         validate_executed_agent07_execution_contract(executed)
-        if executed.runtime_result.provisional_bundle is None:
+        if not _agent07_has_classifiable_bundle(runtime_result):
+            # Bloqueo OPERATIVO: no hay bundle real que respalde ninguna
+            # decisión científica -- sigue siendo un fallo técnico real,
+            # nunca committable como resultado oficial.
             raise RuntimeError("AGENT07_OPERATIONAL_BLOCK_NOT_SCIENTIFIC_COMMITTABLE")
-        raise RuntimeError("AGENT07_SCIENTIFIC_BLOCK_NOT_OFFICIAL_COMMITTABLE")
+        # Bloqueo CIENTÍFICO con bundle+resolución reales: la clasificación
+        # ya corrió sobre datos reales (ver _classify_agent07_transition)
+        # y produjo una decisión ADVANCE/RETURN/HALT_STAGE genuina -- es
+        # tan committable como un runtime_status COMPLETED/PARTIAL. No se
+        # rechaza aquí; continúa al mismo chequeo de conjunto de payloads
+        # que cualquier otro resultado.
     names = set(executed.candidate_payloads)
     extra = names - set(AGENT07_ARTIFACT_NAMES)
     if not set(AGENT07_ARTIFACT_NAMES).issubset(names) or (extra and extra != {AGENT07_CONDITIONAL_ARTIFACT_NAME}):
