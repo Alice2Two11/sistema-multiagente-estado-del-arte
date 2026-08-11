@@ -473,11 +473,11 @@ class DraftWritingAgent:
                     warnings=(),
                     failure_reason_codes=(),
                     requested_transition=RequestedTransition(
-                        action=TransitionAction.ADVANCE,
-                        target_stage=None,
-                        reason_code="APPROVED",
-                        requires_human_confirmation=False,
-                    ),
+                    action=TransitionAction.ADVANCE,
+                    target_stage="07_agente_verificador",
+                    reason_code="APPROVED",
+                    requires_human_confirmation=False,
+                ),
                     output_artifacts=artifacts,
                     tool_usage=ToolUsage(
                         retrieval_rounds=0, llm_calls=0, validation_calls=0
@@ -1056,7 +1056,7 @@ class DraftWritingAgent:
                 failure_reason_codes=(),
                 requested_transition=RequestedTransition(
                     action=TransitionAction.ADVANCE,
-                    target_stage=None,
+                    target_stage="07_agente_verificador",
                     reason_code="APPROVED",
                     requires_human_confirmation=False,
                 ),
