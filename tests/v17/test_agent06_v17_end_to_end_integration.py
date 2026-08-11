@@ -55,6 +55,23 @@ def _normalize_validation_paths(report: dict) -> dict:
                 attempt["rag_trace_path"] = Path(attempt["rag_trace_path"]).name
     return normalized
 
+
+def _normalize_draft_claim_identity(sections: list) -> list:
+    """claim_uid es un UUID4 aleatorio y opaco, minteado de nuevo en
+    CADA ejecución (ver src/tools/draft_writing/claim_identity.py --
+    decisión explícita: identidad persistente NO determinista, nunca un
+    hash de contenido). Es correcto -- y esperado -- que dos corridas
+    independientes del mismo INITIAL_DRAFT produzcan claim_uid distintos
+    para "el mismo" claim en términos de contenido. Este test compara
+    determinismo del contenido CIENTÍFICO (texto, citas, veredictos),
+    no de la identidad -- se excluye claim_uid antes de comparar, igual
+    que ya se excluyen rutas específicas del entorno arriba."""
+    normalized = json.loads(json.dumps(sections))
+    for section in normalized:
+        for claim in section.get("claims") or []:
+            claim.pop("claim_uid", None)
+    return normalized
+
 HYBRID = {
     "retrieval_strategy": "hybrid_chroma_csv_rrf_balanced",
     "top_k_evidence_per_section": 5,
@@ -194,7 +211,10 @@ class TestAgent06V17EndToEndIntegration(unittest.TestCase):
             _normalize_validation_paths(outputs[0]["validation"]),
             _normalize_validation_paths(outputs[1]["validation"]),
         )
-        self.assertEqual(outputs[0]["draft"]["sections"], outputs[1]["draft"]["sections"])
+        self.assertEqual(
+            _normalize_draft_claim_identity(outputs[0]["draft"]["sections"]),
+            _normalize_draft_claim_identity(outputs[1]["draft"]["sections"]),
+        )
 
 
 if __name__ == "__main__":

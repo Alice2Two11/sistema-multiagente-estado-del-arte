@@ -37,7 +37,11 @@ class _FakeChatOpenAI:
 
     def invoke(self, messages):
         self.calls += 1
-        return _FakeResponse('```json\n{"title": "ok"}\n```')
+        return _FakeResponse(
+            '```json\n'
+            '{"title": "ok", "objective": "obj", "narrative_strategy": "ns", "sections": []}\n'
+            '```'
+        )
 
 
 def _fake_langchain_modules():
@@ -123,7 +127,16 @@ class TestAgent05RuntimeResolution(unittest.TestCase):
         credential.assert_called_once_with(
             "OPENAI_API_KEY", project_dir="/content/proyecto_estado_arte"
         )
-        self.assertEqual(parsed, {"title": "ok"})
+        # Contrato real del parser estricto de esquema
+        # (src/tools/outline_generation/response_parsing.py::
+        # _is_outline_root): exige los 4 campos raíz completos
+        # (title/objective/narrative_strategy/sections) -- un JSON
+        # incompleto como {"title": "ok"} se rechaza deliberadamente
+        # (INVALID_LLM_OUTPUT), ya no se acepta como antes.
+        self.assertEqual(
+            parsed,
+            {"title": "ok", "objective": "obj", "narrative_strategy": "ns", "sections": []},
+        )
         self.assertEqual(_FakeChatOpenAI.created[0].temperature, 0)
         self.assertEqual(_FakeChatOpenAI.created[0].calls, 1)
 
