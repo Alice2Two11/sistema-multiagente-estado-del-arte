@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 import json
 from pathlib import Path
+import re
 from typing import Any, Mapping, Sequence
 
 import pandas as pd
@@ -30,19 +31,13 @@ from src.tools.draft_writing.artifacts import (
 )
 from src.tools.draft_writing.hybrid_retrieval import retrieve_section_evidence_hybrid
 from src.tools.draft_writing.input_validation import validate_draft_dependencies
-from src.tools.draft_writing.normalization import normalize_generated_section
-from src.tools.draft_writing.claim_identity import (
-    ClaimIdentityDeclaration,
-    ClaimIdentityRecord,
-    check_no_claim_uid_collisions,
-    default_mint_claim_uid,
-    enforce_forced_claim_uid_continuations,
-    resolve_claim_identity,
+from src.tools.draft_writing.normalization import (
+    normalize_generated_section,
+    split_sentences_preserving_citations,
 )
 from src.tools.draft_writing.prompting import (
     assign_section_budgets,
     build_section_prompt,
-    build_section_revision_prompt,
     build_source_free_organizational_section,
 )
 from src.tools.draft_writing.quantitative_augmentation import (
@@ -55,7 +50,6 @@ from src.tools.draft_writing.retrieval import (
 from src.tools.draft_writing.source_aware_budgets import (
     assign_source_aware_section_budgets,
 )
-from src.tools.verification.corrections import fingerprint_text
 from src.tools.draft_writing.validation import (
     CITATION_RE,
     build_draft_reports,
@@ -151,11 +145,6 @@ class DraftWritingAgent:
     def _effective_versions(
         policy: Mapping[str, Any], strategy: str
     ) -> dict[str, str]:
-        """Return algorithm identity derived only from executed strategy.
-
-        Policy version fields remain available for fingerprinting and audit,
-        but cannot override the effective identity published by the agent.
-        """
         del policy
         if strategy == HYBRID_RETRIEVAL_STRATEGY:
             return dict(HYBRID_VERSIONS)
@@ -251,7 +240,6 @@ class DraftWritingAgent:
 
     @staticmethod
     def _unique_validation_items(items: Sequence[Any]) -> list[Any]:
-        """Return a deterministic union while preserving the first occurrence."""
         unique: list[Any] = []
         seen: set[str] = set()
         for item in items:
@@ -267,26 +255,15 @@ class DraftWritingAgent:
         original_validation: Mapping[str, Any],
         normalized_validation: Mapping[str, Any],
     ) -> dict[str, Any]:
-        """Use the canonical V17 validation as the effective decision.
-
-        The raw LLM response is still validated and preserved for auditability,
-        but it must not reject a section after ``normalize_generated_section``
-        has produced the canonical representation that passes every validation.
-        """
         combined: dict[str, Any] = dict(normalized_validation)
-
-        # The effective blocking errors belong to the canonical representation.
-        # Raw-response errors are retained separately for diagnosis and tracing.
         for field in ("errors", "citation_errors", "claim_errors", "numeric_errors"):
             combined[field] = cls._unique_validation_items(
-                list(normalized_validation.get(field) or [])
-            )
-            combined[f"original_{field}"] = cls._unique_validation_items(
                 list(original_validation.get(field) or [])
+                + list(normalized_validation.get(field) or [])
             )
-
         combined["validation_ok"] = bool(
-            normalized_validation.get("validation_ok")
+            original_validation.get("validation_ok")
+            and normalized_validation.get("validation_ok")
         )
         combined["original_validation_ok"] = bool(
             original_validation.get("validation_ok")
@@ -294,379 +271,145 @@ class DraftWritingAgent:
         combined["normalized_validation_ok"] = bool(
             normalized_validation.get("validation_ok")
         )
-        combined["normalization_repaired_output"] = bool(
-            not original_validation.get("validation_ok")
-            and normalized_validation.get("validation_ok")
-        )
         return combined
 
-    def _resolve_section_claim_identities(
-        self, section: dict[str, Any], *, previous_claims_by_uid: dict[str, ClaimIdentityRecord],
-        round_number: int, forced_parent_uids: tuple[str, ...] = (),
-    ) -> list[ClaimIdentityRecord]:
-        """Resuelve claim_uid/claim_version/parent_claim_uids/etc. (ver
-        ``src/tools/draft_writing/claim_identity.py``) para cada claim
-        de ``section["claims"]``, en el orden en que aparecen -- el
-        ``claim_id`` posicional (``f"{sid}_C{idx}"``) se sigue
-        calculando igual, pero deja de ser la fuente de identidad.
+    # ------------------------------------------------------------------
+    # Conservative deterministic numeric salvage
+    # ------------------------------------------------------------------
 
-        Muta ``section["claims"]`` in-place, agregando los campos de
-        ``ClaimIdentityRecord`` a cada claim. Devuelve la lista de
-        records resueltos, para que el llamador acumule el chequeo de
-        colisión (``check_no_claim_uid_collisions``) y de continuación
-        forzada (``enforce_forced_claim_uid_continuations``) a nivel de
-        TODO el borrador -- nunca solo de esta sección, porque un
-        claim_uid debe ser único en todo el documento, no solo dentro
-        de su propia sección."""
+    @staticmethod
+    def _unsupported_numeric_values(
+        validation: Mapping[str, Any],
+    ) -> list[str]:
+        """
+        Return unsupported numeric literals only when the section has no
+        non-numeric validation failures.
 
-        section_id = str(section.get("section_id", "")).strip()
-        claims = section.get("claims") or []
-        resolved: list[ClaimIdentityRecord] = []
-        for idx, claim in enumerate(claims, start=1):
+        This is intentionally fail-closed: citation, claim, structural, or
+        mixed numeric errors prevent salvage.
+        """
+        if list(validation.get("errors") or []):
+            return []
+        if list(validation.get("citation_errors") or []):
+            return []
+        if list(validation.get("claim_errors") or []):
+            return []
+
+        numeric_errors = list(validation.get("numeric_errors") or [])
+        if not numeric_errors:
+            return []
+
+        prefix = "UNSUPPORTED_NUMERIC_VALUE:"
+        values: list[str] = []
+
+        for item in numeric_errors:
+            text = str(item).strip()
+            if not text.startswith(prefix):
+                return []
+
+            value = text[len(prefix):].strip()
+            if not value:
+                return []
+
+            values.append(value)
+
+        return values
+
+    @staticmethod
+    def _numeric_literal_pattern(raw_value: str) -> re.Pattern[str] | None:
+        """
+        Build an exact numeric literal matcher.
+
+        Examples:
+        40%   -> matches 40% or 40 %
+        4.5   -> matches 4.5 (and text normalized from 4,5)
+        20    -> does not match 120 or 20.5
+        """
+        value = str(raw_value or "").strip().replace(",", ".")
+        if not value:
+            return None
+
+        has_percent = value.endswith("%")
+        numeric = value[:-1].strip() if has_percent else value
+
+        if not re.fullmatch(r"[-+]?\d+(?:\.\d+)?", numeric):
+            return None
+
+        suffix = r"\s*%" if has_percent else ""
+        return re.compile(
+            rf"(?<![\d.]){re.escape(numeric)}{suffix}(?![\d.])"
+        )
+
+    @classmethod
+    def _contains_unsupported_numeric(
+        cls,
+        text: str,
+        values: Sequence[str],
+    ) -> bool:
+        normalized_text = str(text or "").replace(",", ".")
+        for value in values:
+            pattern = cls._numeric_literal_pattern(value)
+            if pattern is not None and pattern.search(normalized_text):
+                return True
+        return False
+
+    @classmethod
+    def _salvage_numeric_only_section(
+        cls,
+        generated: Mapping[str, Any],
+        validation: Mapping[str, Any],
+        allowed_pairs: set[tuple[str, str]],
+    ) -> tuple[dict[str, Any], list[str], list[str]] | None:
+        """
+        Conservatively delete entire sentences/claims containing unsupported
+        numeric literals after LLM revision attempts are exhausted.
+
+        No value is replaced, inferred, rounded, or invented.
+        """
+        values = cls._unsupported_numeric_values(validation)
+        if not values:
+            return None
+
+        draft_text = str(generated.get("draft_text", "") or "")
+        sentences = split_sentences_preserving_citations(draft_text)
+        if not sentences:
+            return None
+
+        kept_sentences: list[str] = []
+        removed_sentences: list[str] = []
+
+        for sentence in sentences:
+            if cls._contains_unsupported_numeric(sentence, values):
+                removed_sentences.append(sentence)
+            else:
+                kept_sentences.append(sentence)
+
+        # Fail closed if no offending sentence was localized, or salvage would
+        # erase the whole section.
+        if not removed_sentences or not kept_sentences:
+            return None
+
+        kept_claims: list[dict[str, Any]] = []
+        for claim in generated.get("claims") or []:
             if not isinstance(claim, dict):
                 continue
-            claim_id = f"{section_id}_C{idx}"
-            claim_text = str(claim.get("claim") or "")
-            action_raw = claim.get("identity_action")
-            parents_raw = tuple(claim.get("parent_claim_uids") or ())
-            if action_raw is None:
-                # El LLM no declaró identidad (ej. sección INITIAL_DRAFT
-                # sin contrato de identidad todavía, o una respuesta
-                # incompleta) -- nunca se asume en silencio: se trata
-                # como NEW explícito solo cuando no había NINGÚN claim
-                # previo posible (INITIAL_DRAFT real); si había
-                # previous_claims_by_uid disponibles y el LLM omitió el
-                # campo, es un fallo de contrato real.
-                if previous_claims_by_uid:
-                    raise ValueError(
-                        f"CLAIM_IDENTITY_MISSING_DECLARATION:{section_id}:{claim_id}"
-                    )
-                action_raw = "NEW"
-            declaration = ClaimIdentityDeclaration(action=action_raw, parent_claim_uids=parents_raw)
-            record = resolve_claim_identity(
-                declaration=declaration, claim_text=claim_text, claim_id=claim_id,
-                previous_claims_by_uid=previous_claims_by_uid, forced_parent_uid=None,
-                round_number=round_number, text_fingerprint=fingerprint_text,
-                mint_uid=default_mint_claim_uid,
-            )
-            claim.update(record.to_dict())
-            resolved.append(record)
+            claim_text = str(claim.get("claim", "") or "")
+            if cls._contains_unsupported_numeric(claim_text, values):
+                continue
+            kept_claims.append(dict(claim))
 
-        enforce_forced_claim_uid_continuations(
-            resolved_claims=resolved, forced_parent_uids=forced_parent_uids,
-        )
-        return resolved
+        candidate = dict(generated)
+        candidate["draft_text"] = " ".join(kept_sentences)
+        candidate["claims"] = kept_claims
+
+        # Re-run canonical normalization so citations and claims preserve the
+        # same closed allowed-pair contract used for ordinary generation.
+        candidate = normalize_generated_section(candidate, allowed_pairs)
+        candidate["generation_attempt"] = generated.get("generation_attempt")
+
+        return candidate, removed_sentences, values
 
     def execute(self, agent_input):
-        policy_mode = dict(agent_input.policy).get("mode", "INITIAL_DRAFT")
-        if policy_mode == "REVISION":
-            return self._execute_revision(agent_input)
-        return self._execute_initial_draft(agent_input)
-
-    def _execute_revision(self, agent_input):
-        """Modo REVISION (mínimo funcional): reutiliza el procesamiento
-        por sección existente. Recibe en ``agent_input.policy``:
-        ``writer_revision_request`` (dict real de ``build_writer_revision_
-        request``), ``previous_draft`` (dict con ``sections``, el borrador
-        comprometido anterior), ``round_number``. Regenera SOLO las
-        secciones con issues; preserva el resto sin llamar al LLM. No usa
-        Ground Truth (nunca aparece en ``policy``/``bundle`` — mismos
-        insumos que el modo inicial). No regenera todo el documento
-        silenciosamente: una sección sin issues nunca se reenvía al LLM.
-
-        Limitación documentada de esta ronda: no reutiliza
-        ``write_draft_artifacts``/``NAMES`` (el set completo de 10
-        artefactos del modo inicial, pensado para un borrador nuevo) —
-        escribe un subconjunto mínimo propio (``revised_draft.json``,
-        ``revision_changelog.json``, ``revision_resolution_matrix.json``)
-        en el mismo ``output_directory``. Fingerprints/PREPARE/COMMIT/
-        RESUME del ciclo completo de 06-revisión NO están integrados con
-        ``StateStore`` todavía — ver limitaciones del informe.
-        """
-
-        start = datetime.now(timezone.utc).isoformat()
-        out = Path(agent_input.agent_context.output_directory)
-        out.mkdir(parents=True, exist_ok=True)
-        raw_dir = out / "raw_section_outputs"
-        raw_dir.mkdir(parents=True, exist_ok=True)
-
-        policy = dict(agent_input.policy)
-        revision_request = policy["writer_revision_request"]
-        previous_draft = policy["previous_draft"]
-        round_number = int(policy.get("round_number", revision_request.get("round_number", 1)))
-
-        bundle = validate_draft_dependencies(agent_input)
-        strategy = self._strategy(policy)
-        versions = self._effective_versions(policy, strategy)
-        policy.update(versions)
-        policy["round_number"] = round_number
-
-        outline_sections = bundle["outline"].get("sections") or []
-        outline_by_id = {str(s.get("section_id", "")).strip(): s for s in outline_sections}
-        policy["outline_sections"] = outline_sections
-        policy["section_budgets"] = self._section_budgets(outline_sections, policy, strategy)
-
-        issues_by_section: dict[str, list[Any]] = {}
-        for issue in revision_request.get("issues", ()):
-            issues_by_section.setdefault(str(issue.get("section_id", "")).strip(), []).append(issue)
-
-        previous_sections_by_id = {
-            str(s.get("section_id", "")).strip(): s for s in previous_draft.get("sections", ())
-        }
-
-        generated: list[dict[str, Any]] = []
-        changelog: list[dict[str, Any]] = []
-        resolution_matrix: list[dict[str, Any]] = []
-        unresolved_issue_ids: list[str] = []
-        llm_calls = 0
-        retrieval_rounds = 0
-
-        for section_id, previous_section in previous_sections_by_id.items():
-            section_issues = issues_by_section.get(section_id)
-
-            if not section_issues:
-                generated.append(dict(previous_section))
-                changelog.append(
-                    {"section_id": section_id, "action": "PRESERVED", "issue_ids": []}
-                )
-                continue
-
-            issue_ids = [str(i.get("issue_id", "")) for i in section_issues]
-            outline_section = outline_by_id.get(section_id)
-            if outline_section is None:
-                # La sección ya no existe en el esquema vigente -- no hay
-                # forma segura de regenerarla; se preserva y se registran
-                # sus issues como no resueltos, sin inventar nada.
-                generated.append(dict(previous_section))
-                changelog.append(
-                    {"section_id": section_id, "action": "SKIPPED_NO_OUTLINE_SECTION", "issue_ids": issue_ids}
-                )
-                unresolved_issue_ids.extend(issue_ids)
-                continue
-
-            quant_context = self._quant_context(
-                outline_section, bundle, int(policy.get("max_quantitative_rows_per_section", 12))
-            )
-            evidence = self._retrieve_section_evidence(
-                outline_section, bundle, policy, strategy, quant_context
-            )
-            retrieval_rounds += 1
-
-            if not evidence:
-                generated.append(dict(previous_section))
-                changelog.append(
-                    {"section_id": section_id, "action": "SKIPPED_NO_EVIDENCE", "issue_ids": issue_ids}
-                )
-                unresolved_issue_ids.extend(issue_ids)
-                continue
-
-            # Identidad estable de claims (ver claim_identity.py):
-            # solo se ofrecen como "continuables" los claims previos que
-            # YA tienen claim_uid -- una sección de un experimento
-            # anterior a este contrato ("legacy", requisito explícito
-            # de no reconstruir identidades retroactivamente por
-            # similitud) simplemente no tiene ningún claim_uid previo
-            # que continuar: todo lo que el LLM genere para ella será
-            # necesariamente NEW, sin intentar adivinar de dónde viene.
-            previous_claims_by_uid = {
-                c["claim_uid"]: ClaimIdentityRecord(
-                    claim_uid=c["claim_uid"], claim_version=c["claim_version"], claim_id=c.get("claim_id", ""),
-                    parent_claim_uids=tuple(c.get("parent_claim_uids") or ()),
-                    claim_text_fingerprint=c.get("claim_text_fingerprint", ""),
-                    created_round=c.get("created_round", 1), updated_round=c.get("updated_round", 1),
-                )
-                for c in (previous_section.get("claims") or [])
-                if isinstance(c, dict) and c.get("claim_uid")
-            }
-            previous_claims_for_identity = [
-                {"claim_uid": c["claim_uid"], "claim_text": str(c.get("claim", ""))}
-                for c in (previous_section.get("claims") or [])
-                if isinstance(c, dict) and c.get("claim_uid")
-            ]
-            forced_parent_uids = tuple(
-                str(issue["claim_uid"]) for issue in section_issues if issue.get("claim_uid")
-            )
-
-            prompt = build_section_revision_prompt(
-                outline_section,
-                evidence,
-                quant_context,
-                policy,
-                previous_section_draft_text=str(previous_section.get("draft_text", "")),
-                issues=section_issues,
-                previous_claims_for_identity=previous_claims_for_identity,
-            )
-            raw = self.runtime.invoke(prompt)
-            llm_calls += 1
-            write_raw_section_output(raw_dir, section_id, round_number, raw)
-            parsed = self.runtime.parse(raw)
-
-            allowed = {(row["source_filename"], row["chunk_id"]) for row in evidence}
-            normalized = normalize_generated_section(parsed, allowed)
-            normalized["generation_attempt"] = round_number
-            validation = validate_generated_section(normalized, outline_section, evidence)
-            normalized["section_validation"] = validation
-            self._resolve_section_claim_identities(
-                normalized, previous_claims_by_uid=previous_claims_by_uid,
-                round_number=round_number, forced_parent_uids=forced_parent_uids,
-            )
-            generated.append(normalized)
-
-            has_errors = bool(
-                validation.get("citation_errors")
-                or validation.get("claim_errors")
-                or validation.get("numeric_errors")
-            )
-            action = "REVISED" if not has_errors else "REVISED_WITH_REMAINING_ISSUES"
-            changelog.append({"section_id": section_id, "action": action, "issue_ids": issue_ids})
-            evidence_refs = [f"{row['source_filename']}|{row['chunk_id']}" for row in evidence]
-            claim_uid_by_issue_id = {
-                str(issue.get("issue_id")): str(issue.get("claim_uid") or "")
-                for issue in section_issues
-            }
-            for issue in section_issues:
-                resolution_matrix.append(
-                    {
-                        "issue_id": issue.get("issue_id"),
-                        "claim_uid": claim_uid_by_issue_id.get(str(issue.get("issue_id")), ""),
-                        "action_taken": "SECTION_REGENERATED_LOCALIZED",
-                        "section_id": section_id,
-                        "evidence_used": evidence_refs,
-                        "result": "RESOLVED" if not has_errors else "UNRESOLVED",
-                    }
-                )
-            if has_errors:
-                unresolved_issue_ids.extend(issue_ids)
-
-        check_no_claim_uid_collisions(
-            [
-                ClaimIdentityRecord(
-                    claim_uid=c["claim_uid"], claim_version=c["claim_version"], claim_id=c.get("claim_id", ""),
-                    parent_claim_uids=tuple(c.get("parent_claim_uids") or ()),
-                    claim_text_fingerprint=c.get("claim_text_fingerprint", ""),
-                    created_round=c.get("created_round", round_number), updated_round=c.get("updated_round", round_number),
-                )
-                for section in generated for c in (section.get("claims") or []) if isinstance(c, dict) and c.get("claim_uid")
-            ]
-        )
-
-        revised_draft = {**previous_draft, "sections": generated, "revision_round": round_number}
-        revised_draft_path = out / "revised_draft.json"
-        revised_draft_path.write_text(
-            json.dumps(revised_draft, ensure_ascii=False, indent=2), encoding="utf-8"
-        )
-        changelog_path = out / "revision_changelog.json"
-        changelog_path.write_text(json.dumps(changelog, ensure_ascii=False, indent=2), encoding="utf-8")
-        matrix_path = out / "revision_resolution_matrix.json"
-        matrix_path.write_text(
-            json.dumps(resolution_matrix, ensure_ascii=False, indent=2), encoding="utf-8"
-        )
-
-        # Nuevo fingerprint: borrador anterior + revision request + ronda +
-        # configuración + evidencia usada (vía el propio contenido del
-        # borrador revisado, que ya incorpora qué evidencia se citó).
-        from src.state.fingerprints import fingerprint_mapping
-
-        new_fingerprint = fingerprint_mapping(
-            {
-                "previous_draft_fingerprint": previous_draft.get("source_draft_fingerprint")
-                or previous_draft.get("draft_fingerprint"),
-                "writer_revision_request_fingerprint": fingerprint_mapping(revision_request),
-                "round_number": round_number,
-                "policy": {k: v for k, v in policy.items() if k not in {"outline_sections"}},
-                "revised_draft": revised_draft,
-            }
-        )
-
-        unresolved = sorted(set(unresolved_issue_ids))
-        all_issue_ids = [str(i.get("issue_id", "")) for i in revision_request.get("issues", ())]
-        resolved = sorted(set(all_issue_ids) - set(unresolved))
-
-        # Persistencia por ronda (punto 1), lado de 06: opcional, activada
-        # solo si policy trae project_dir/experiment_id (el llamador real
-        # los conoce; las pruebas unitarias que no los pasan simplemente no
-        # persisten por ronda, sin romper). No sobrescribe rondas previas.
-        # Punto 4: sin captura de excepciones -- si la persistencia falla
-        # (FileExistsError, OSError, error de serialización), se propaga
-        # tal cual y el resultado de 06 NO se produce (ver más abajo esta
-        # llamada ya no está envuelta en try/except).
-        cycle_project_dir = policy.get("cycle_project_dir")
-        cycle_experiment_id = policy.get("experiment_id")
-        if cycle_project_dir and cycle_experiment_id:
-            from src.tools.verification.cycle_round_persistence import complete_round_revision
-
-            complete_round_revision(
-                project_dir=cycle_project_dir,
-                experiment_id=cycle_experiment_id,
-                cycle_id=revision_request["cycle_id"],
-                round_number=round_number,
-                writer_revision_request=revision_request,
-                artifacts={
-                    "revised_draft.json": revised_draft,
-                    "revision_changelog.json": changelog,
-                    "revision_resolution_matrix.json": resolution_matrix,
-                    "unresolved_issues.json": unresolved,
-                    "fingerprint.json": {
-                        "new_fingerprint": new_fingerprint,
-                        "previous_draft_fingerprint": previous_draft.get("source_draft_fingerprint"),
-                        "writer_revision_request_fingerprint": fingerprint_mapping(revision_request),
-                        "round_number": round_number,
-                    },
-                },
-            )
-
-        artifacts = {
-            "revised_draft.json": ArtifactReference(str(revised_draft_path), sha256_file(revised_draft_path)),
-            "revision_changelog.json": ArtifactReference(str(changelog_path), sha256_file(changelog_path)),
-            "revision_resolution_matrix.json": ArtifactReference(str(matrix_path), sha256_file(matrix_path)),
-        }
-
-        quality_status = (
-            QualityStatus.APPROVED_WITH_WARNINGS if unresolved else QualityStatus.APPROVED
-        )
-        return AgentResult(
-            execution_status=ExecutionStatus.COMPLETED,
-            quality_status=quality_status,
-            decision=DecisionInfo(
-                code="DRAFT_REVISION_COMPLETED",
-                rationale=f"Ronda {round_number}: {len(resolved)} issue(s) resuelto(s), {len(unresolved)} pendiente(s).",
-            ),
-            quality_metrics={
-                "scientific": {"resolved_issues": len(resolved), "unresolved_issues": len(unresolved)},
-                "technical": {
-                    "revision_fingerprint": new_fingerprint,
-                    "sections_regenerated": sum(1 for c in changelog if c["action"].startswith("REVISED")),
-                    "sections_preserved": sum(1 for c in changelog if c["action"] == "PRESERVED"),
-                },
-            },
-            warnings=(
-                tuple(
-                    AgentWarning(
-                        code="UNRESOLVED_REVISION_ISSUE",
-                        severity=WarningSeverity.WARNING,
-                        blocking=False,
-                        message=f"Issue no resuelto: {issue_id}",
-                    )
-                    for issue_id in unresolved
-                )
-            ),
-            failure_reason_codes=(),
-            requested_transition=RequestedTransition(
-                action=TransitionAction.ADVANCE,
-                target_stage="07_agente_verificador",
-                reason_code="DRAFT_REVISION_COMPLETED",
-                requires_human_confirmation=False,
-            ),
-            output_artifacts=artifacts,
-            tool_usage=ToolUsage(
-                retrieval_rounds=retrieval_rounds, llm_calls=llm_calls, validation_calls=len(generated)
-            ),
-            attempt_number=agent_input.attempt_number,
-            started_at=start,
-            completed_at=datetime.now(timezone.utc).isoformat(),
-        )
-
-    def _execute_initial_draft(self, agent_input):
         start = datetime.now(timezone.utc).isoformat()
         llm_calls = 0
         retrieval_rounds = 0
@@ -801,6 +544,9 @@ class DraftWritingAgent:
                 previous_errors: list[Any] = []
                 logs: list[dict[str, Any]] = []
                 accepted = None
+                normalized: dict[str, Any] | None = None
+                allowed: set[tuple[str, str]] = set()
+
                 for generation_attempt in range(
                     1, int(policy.get("max_section_revision_attempts", 2)) + 2
                 ):
@@ -973,6 +719,100 @@ class DraftWritingAgent:
                     )
 
                 attempt_logs[sid] = logs
+
+                # ----------------------------------------------------------
+                # Final deterministic salvage:
+                # only after all LLM revision attempts have been exhausted,
+                # and only when the remaining failures are exclusively
+                # UNSUPPORTED_NUMERIC_VALUE.
+                # ----------------------------------------------------------
+                if accepted is None and normalized is not None and logs:
+                    last_validation = logs[-1].get("validation") or {}
+                    salvage = self._salvage_numeric_only_section(
+                        normalized,
+                        last_validation,
+                        allowed,
+                    )
+
+                    if salvage is not None:
+                        salvaged_section, removed_sentences, removed_values = salvage
+                        salvage_validation = validate_generated_section(
+                            salvaged_section,
+                            section,
+                            evidence,
+                        )
+                        validation_calls += 1
+                        salvaged_section["section_validation"] = salvage_validation
+
+                        salvage_tag = "numeric_salvage"
+                        salvage_raw_path = write_raw_section_output(
+                            raw_dir,
+                            sid,
+                            salvage_tag,
+                            json.dumps(
+                                salvaged_section,
+                                ensure_ascii=False,
+                                indent=2,
+                            ),
+                        )
+                        salvage_validation_payload = {
+                            "section_id": sid,
+                            "generation_attempt": salvage_tag,
+                            "mode": "deterministic_numeric_sentence_salvage",
+                            "validation_ok": bool(
+                                salvage_validation.get("validation_ok")
+                            ),
+                            "validation_errors": self._unique_validation_items(
+                                list(salvage_validation.get("errors") or [])
+                                + list(
+                                    salvage_validation.get("citation_errors") or []
+                                )
+                                + list(
+                                    salvage_validation.get("claim_errors") or []
+                                )
+                                + list(
+                                    salvage_validation.get("numeric_errors") or []
+                                )
+                            ),
+                            "numeric_support_errors": list(
+                                salvage_validation.get("numeric_errors") or []
+                            ),
+                            "removed_unsupported_numeric_values": removed_values,
+                            "removed_sentences": removed_sentences,
+                            "word_count": count_words(
+                                salvaged_section.get("draft_text", "")
+                            ),
+                            "citation_count": len(
+                                CITATION_RE.findall(
+                                    str(salvaged_section.get("draft_text", ""))
+                                )
+                            ),
+                            "raw_output_path": str(salvage_raw_path),
+                        }
+                        salvage_validation_path = write_raw_section_validation(
+                            raw_dir,
+                            sid,
+                            salvage_tag,
+                            salvage_validation_payload,
+                        )
+
+                        logs.append(
+                            {
+                                "attempt": salvage_tag,
+                                "mode": "deterministic_numeric_sentence_salvage",
+                                "validation": salvage_validation,
+                                "attempt_validation_path": str(
+                                    salvage_validation_path
+                                ),
+                                "removed_unsupported_numeric_values": removed_values,
+                                "removed_sentences": removed_sentences,
+                            }
+                        )
+                        attempt_logs[sid] = logs
+
+                        if salvage_validation.get("validation_ok") is True:
+                            accepted = salvaged_section
+
                 if accepted is None:
                     last_validation = (
                         (logs[-1].get("validation") or {}) if logs else {}
@@ -1055,24 +895,8 @@ class DraftWritingAgent:
                         started_at=start,
                         completed_at=datetime.now(timezone.utc).isoformat(),
                     )
-                self._resolve_section_claim_identities(
-                    accepted, previous_claims_by_uid={}, round_number=1,
-                )
-                generated.append(accepted)
 
-            # Colisión de claim_uid a nivel de TODO el borrador inicial
-            # -- nunca solo por sección (ver check_no_claim_uid_collisions).
-            check_no_claim_uid_collisions(
-                [
-                    ClaimIdentityRecord(
-                        claim_uid=c["claim_uid"], claim_version=c["claim_version"], claim_id=c["claim_id"],
-                        parent_claim_uids=tuple(c.get("parent_claim_uids") or ()),
-                        claim_text_fingerprint=c["claim_text_fingerprint"],
-                        created_round=c["created_round"], updated_round=c["updated_round"],
-                    )
-                    for section in generated for c in (section.get("claims") or []) if "claim_uid" in c
-                ]
-            )
+                generated.append(accepted)
 
             evidence_map: dict[str, list[dict[str, Any]]] = {}
             for row in all_evidence:
