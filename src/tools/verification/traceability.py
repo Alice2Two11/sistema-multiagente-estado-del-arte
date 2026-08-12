@@ -321,6 +321,29 @@ class CorrectionTraceabilityRow:
     target_span_in_claim: Mapping[str, Any] | None = None
     replacement_text: str | None = None
     proposed_claim_text: str | None = None
+    # Trazabilidad terminal completa (una CorrectionProposal SIEMPRE trae
+    # estos datos -- ver CorrectionProposal en corrections.py -- pero
+    # antes se descartaban al construir la fila del bundle). Copiados
+    # directamente desde la CorrectionProposal.to_dict() unida por
+    # correction_id, sin inventar nada: si la propuesta no los tenía
+    # (ej. un dict legacy incompleto en un fixture antiguo), quedan en
+    # su default explícito, nunca se sintetiza un valor.
+    correction_decision: str | None = None
+    final_proposal_status: str | None = None
+    requires_manual_review: bool = False
+    accepted_for_reverification: bool = False
+    reason_codes: tuple[str, ...] = ()
+    validation_issue_codes: tuple[str, ...] = ()
+    decision_path: tuple[str, ...] = ()
+    retry_metrics: Mapping[str, int] | None = None
+    # Referencia SEGURA a raw_attempts -- nunca el texto crudo del LLM
+    # embebido en la fila de trazabilidad (podría ser grande y no aporta
+    # auditoría adicional sobre el conteo/fingerprint): cuántos intentos
+    # hubo y un fingerprint determinista de su contenido, suficiente
+    # para correlacionar con el artefacto raw real si hace falta
+    # inspeccionarlo.
+    raw_attempts_count: int = 0
+    raw_attempts_fingerprint: str | None = None
     def to_dict(self) -> dict[str, Any]: return asdict(self)
 
 

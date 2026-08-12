@@ -640,7 +640,7 @@ def _empty_proposal(claim_id,section_id,original,claim_fp,section_fp,decision,st
     )
     metrics=retry_metrics or {"llm_calls":0,"format_attempts":0,"format_retries":0,"schema_validation_attempts":0,"schema_retries":0,"total_response_retries":0}
     return CorrectionProposal("C07_"+claim_id+"_"+fp[:12],claim_id,section_id,decision,None,status,original,claim_fp,section_fp,
-        dict(claim_span_in_section) if claim_span_in_section is not None else None,None,None,"",fingerprint_text(""),"",original,(),(),"NONE","NONE",(),(),None,(),(),"","",(),(),None,(),(),(),(),(),False,status in {"DEFERRED","REJECTED"},False,False,status,fp,policy["correction_user_prompt_version"],tuple(issues),tuple(path),tuple(raw_attempts),metrics)
+        dict(claim_span_in_section) if claim_span_in_section is not None else None,None,None,"",fingerprint_text(""),"",original,(),tuple(issues),"NONE","NONE",(),(),None,(),(),"","",(),(),None,(),(),(),(),(),False,status in {"DEFERRED","REJECTED"},False,False,status,fp,policy["correction_user_prompt_version"],tuple(issues),tuple(path),tuple(raw_attempts),metrics)
 
 
 # Phase 6.2: construcción virtual estrictamente en memoria.

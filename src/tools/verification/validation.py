@@ -4907,7 +4907,27 @@ def build_provisional_traceability_rows(referential_result:Any):
         if ri and set(p.get("evidence_ids",()))-set(auth): issues.append("AGGREGATION_ROW_EVIDENCE_IDENTITY_UNAVAILABLE"); continue
         def avail(obj,blocked=False): return "AVAILABLE" if obj is not None else ("BLOCKED_UPSTREAM" if blocked else "NOT_PRODUCED")
         action,is_scientific,is_gate=_phase655_stage_action(p,cp)
-        cr=CorrectionTraceabilityRow(p["correction_id"],p["claim_id"],p["section_id"],action,is_scientific,is_gate,"AVAILABLE",avail(pc),avail(rv,pc is not None and pc["precheck_status"]!="PRECHECK_PASSED"),avail(cp,rv is None or rv.get("reverification_execution_status")!="COMPLETED"),p.get("final_proposal_status"),pc.get("precheck_status") if pc else None,rv.get("reverification_execution_status") if rv else None,cp.get("acceptance_decision") if cp else None,tuple((ri or {}).get("target_issue_codes",())),tuple((cp or {}).get("resolved_issue_codes",())),tuple((cp or {}).get("remaining_issue_codes",())),tuple((cp or {}).get("new_issue_codes",())),(cp or {}).get("hallucination_risk_before"),(cp or {}).get("hallucination_risk_after"),(cp or {}).get("hallucination_risk_delta"),p.get("proposal_fingerprint"),(pc or {}).get("virtual_proposed_claim_text_fingerprint"),(pc or {}).get("frozen_evidence_snapshot_fingerprint"),(pc or {}).get("reverification_context_fingerprint"),tuple((pc or {}).get("reason_codes",())),tuple((pc or {}).get("technical_issue_codes",())),tuple((cp or {}).get("reason_codes",())),tuple((cp or {}).get("technical_issue_codes",())),next((d.get("gate_classification") for d in (cp or {}).get("decision_trace",()) if d.get("gate_classification")),None),bool((cp or {}).get("manual_review_required",False) or (rv or {}).get("manual_review_recommended",False)),False)
+        cr=CorrectionTraceabilityRow(p["correction_id"],p["claim_id"],p["section_id"],action,is_scientific,is_gate,"AVAILABLE",avail(pc),avail(rv,pc is not None and pc["precheck_status"]!="PRECHECK_PASSED"),avail(cp,rv is None or rv.get("reverification_execution_status")!="COMPLETED"),p.get("final_proposal_status"),pc.get("precheck_status") if pc else None,rv.get("reverification_execution_status") if rv else None,cp.get("acceptance_decision") if cp else None,tuple((ri or {}).get("target_issue_codes",())),tuple((cp or {}).get("resolved_issue_codes",())),tuple((cp or {}).get("remaining_issue_codes",())),tuple((cp or {}).get("new_issue_codes",())),(cp or {}).get("hallucination_risk_before"),(cp or {}).get("hallucination_risk_after"),(cp or {}).get("hallucination_risk_delta"),p.get("proposal_fingerprint"),(pc or {}).get("virtual_proposed_claim_text_fingerprint"),(pc or {}).get("frozen_evidence_snapshot_fingerprint"),(pc or {}).get("reverification_context_fingerprint"),tuple((pc or {}).get("reason_codes",())),tuple((pc or {}).get("technical_issue_codes",())),tuple((cp or {}).get("reason_codes",())),tuple((cp or {}).get("technical_issue_codes",())),next((d.get("gate_classification") for d in (cp or {}).get("decision_trace",()) if d.get("gate_classification")),None),bool((cp or {}).get("manual_review_required",False) or (rv or {}).get("manual_review_recommended",False)),False,
+            # Trazabilidad terminal completa de la CorrectionProposal (ver
+            # CorrectionTraceabilityRow en traceability.py) -- copiada
+            # directamente de p (CorrectionProposal.to_dict()), nunca
+            # inventada. Antes se descartaba por completo al construir
+            # esta fila, dejando proposal_status=DEFERRED sin ninguna
+            # causa auditable.
+            correction_decision=p.get("correction_decision"),
+            final_proposal_status=p.get("final_proposal_status"),
+            requires_manual_review=bool(p.get("requires_manual_review",False)),
+            accepted_for_reverification=bool(p.get("accepted_for_reverification",False)),
+            reason_codes=tuple(p.get("reason_codes") or ()),
+            validation_issue_codes=tuple(p.get("validation_issue_codes") or ()),
+            decision_path=tuple(p.get("decision_path") or ()),
+            retry_metrics=dict(p["retry_metrics"]) if p.get("retry_metrics") else None,
+            raw_attempts_count=len(p.get("raw_attempts") or ()),
+            raw_attempts_fingerprint=(
+                sha256(json.dumps(list(p["raw_attempts"]),ensure_ascii=False,sort_keys=True,default=str).encode("utf-8")).hexdigest()
+                if p.get("raw_attempts") else None
+            ),
+        )
         corr_rows.append(validate_correction_traceability_row_contract(cr.to_dict()))
         ids=set(p.get("evidence_ids",()))|set(auth)|set((rv or {}).get("evidence_ids_used",()))
         for eid in sorted(ids):
