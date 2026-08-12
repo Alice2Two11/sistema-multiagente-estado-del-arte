@@ -533,11 +533,12 @@ def propose_correction(context: Mapping[str,Any], *, llm: CorrectionLLM | None) 
     validate_claim_span_in_section(section,original,claim_span_in_section,section_fingerprint=section_fp)
     eligibility=str(context.get("final_correction_eligibility","NO_CORRECTION_NEEDED"))
     if eligibility=="NO_CORRECTION_NEEDED":
-        return _empty_proposal(claim_id,section_id,original,claim_fp,section_fp,"NO_CORRECTION","NOT_PROPOSED",decision_path,policy)
+        return _empty_proposal(claim_id,section_id,original,claim_fp,section_fp,"NO_CORRECTION","NOT_PROPOSED",decision_path+["ELIGIBILITY_NO_CORRECTION_NEEDED"],policy,reason_codes=("NO_AUTOMATIC_CORRECTION_REQUIRED",))
     if eligibility in {"MANUAL_REVIEW_REQUIRED","NOT_CORRECTABLE_WITH_AVAILABLE_EVIDENCE"}:
         decision="DEFER_TO_MANUAL_REVIEW" if eligibility=="MANUAL_REVIEW_REQUIRED" else "NOT_CORRECTABLE"
         status="DEFERRED" if decision=="DEFER_TO_MANUAL_REVIEW" else "NOT_PROPOSED"
-        return _empty_proposal(claim_id,section_id,original,claim_fp,section_fp,decision,status,decision_path,policy)
+        cause="VERIFIER_REQUIRES_MANUAL_REVIEW" if eligibility=="MANUAL_REVIEW_REQUIRED" else "CLAIM_NOT_AUTOCORRECTABLE"
+        return _empty_proposal(claim_id,section_id,original,claim_fp,section_fp,decision,status,decision_path+[f"ELIGIBILITY_{eligibility}"],policy,reason_codes=(cause,))
     valid_active_priors, prior_audit = _valid_active_prior_proposals(context)
     active_for_claim = tuple(p for p in valid_active_priors if p.get("claim_id") == claim_id)
     if len(active_for_claim) >= policy["max_correction_proposals_per_claim"]:
@@ -580,10 +581,29 @@ def propose_correction(context: Mapping[str,Any], *, llm: CorrectionLLM | None) 
             metrics["schema_retries"]+=1; metrics["total_response_retries"]+=1
             previous_errors=[str(exc)]; raw_attempts.append({"attempt_number":attempt,"raw_text":raw,"parse_status":"SCHEMA_INVALID","validation_errors":tuple(previous_errors)})
     if parsed is None:
-        return _empty_proposal(claim_id,section_id,original,claim_fp,section_fp,"DEFER_TO_MANUAL_REVIEW","DEFERRED",decision_path,policy,raw_attempts=raw_attempts,retry_metrics=metrics,claim_span_in_section=claim_span_in_section)
+        # Fallo real de validación (formato/esquema agotó sus reintentos) --
+        # SÍ es un fallo técnico: validation_issue_codes se llena con los
+        # errores reales acumulados (nunca inventados) además de la causa
+        # semántica en reason_codes.
+        real_validation_errors=tuple(sorted(set(
+            err for attempt in raw_attempts for err in attempt.get("validation_errors",())
+        )))
+        return _empty_proposal(claim_id,section_id,original,claim_fp,section_fp,"DEFER_TO_MANUAL_REVIEW","DEFERRED",decision_path+["CORRECTION_RESPONSE_VALIDATION_EXHAUSTED"],policy,issues=real_validation_errors,reason_codes=("CORRECTION_RESPONSE_VALIDATION_EXHAUSTED",),raw_attempts=raw_attempts,retry_metrics=metrics,claim_span_in_section=claim_span_in_section)
     if parsed["correction_decision"]!="PROPOSE_CHANGE":
         status="DEFERRED" if parsed["correction_decision"]=="DEFER_TO_MANUAL_REVIEW" else "NOT_PROPOSED"
-        return _empty_proposal(claim_id,section_id,original,claim_fp,section_fp,parsed["correction_decision"],status,decision_path,policy,raw_attempts=raw_attempts,retry_metrics=metrics,claim_span_in_section=claim_span_in_section)
+        # El propio LLM ya declaró SU causa real (reason_codes, validado
+        # contra CORRECTION_REASON_CODES en validate_correction_response) --
+        # se reutiliza tal cual, nunca se inventa una nueva. Solo si el LLM
+        # legítimamente no reportó ninguna (lista vacía) se aplica el
+        # respaldo semántico determinista de la decisión, para nunca dejar
+        # esta decisión terminal sin causa.
+        llm_reason_codes=tuple(parsed.get("reason_codes") or ())
+        fallback_cause={
+            "NO_CORRECTION": "NO_AUTOMATIC_CORRECTION_REQUIRED",
+            "DEFER_TO_MANUAL_REVIEW": "VERIFIER_REQUIRES_MANUAL_REVIEW",
+            "NOT_CORRECTABLE": "CLAIM_NOT_AUTOCORRECTABLE",
+        }[parsed["correction_decision"]]
+        return _empty_proposal(claim_id,section_id,original,claim_fp,section_fp,parsed["correction_decision"],status,decision_path+[f"LLM_DECISION_{parsed['correction_decision']}"],policy,reason_codes=llm_reason_codes or (fallback_cause,),raw_attempts=raw_attempts,retry_metrics=metrics,claim_span_in_section=claim_span_in_section)
     action=parsed["action_type"]
     if action=="SPLIT_CLAIM":
         return _empty_proposal(claim_id,section_id,original,claim_fp,section_fp,"DEFER_TO_MANUAL_REVIEW","DEFERRED",decision_path,policy,issues=("SPLIT_CLAIM_MANUAL_REVIEW_ONLY",),raw_attempts=raw_attempts,retry_metrics=metrics,claim_span_in_section=claim_span_in_section)
@@ -633,14 +653,38 @@ def propose_correction(context: Mapping[str,Any], *, llm: CorrectionLLM | None) 
         parsed["new_conditions"],parsed["new_technical_terms"],parsed["llm_correction_recommendation"],not accepted,
         accepted,False,status,proposal_fp,policy["correction_user_prompt_version"],tuple(sorted(set(issues+warnings))),tuple(decision_path),tuple(raw_attempts),metrics)
 
-def _empty_proposal(claim_id,section_id,original,claim_fp,section_fp,decision,status,path,policy,issues=(),raw_attempts=(),retry_metrics=None,claim_span_in_section=None):
+# Decisiones terminales que SIEMPRE deben tener al menos un reason_code
+# determinista y semántico -- nunca reason_codes=() vacío, sin importar
+# la rama que las produzca. Verificado como invariante estructural en
+# _empty_proposal, no confiado a que cada llamador lo recuerde.
+_TERMINAL_DECISIONS_REQUIRING_REASON_CODE = frozenset({"NO_CORRECTION", "DEFER_TO_MANUAL_REVIEW", "NOT_CORRECTABLE"})
+
+
+def _empty_proposal(claim_id,section_id,original,claim_fp,section_fp,decision,status,path,policy,issues=(),reason_codes=None,raw_attempts=(),retry_metrics=None,claim_span_in_section=None):
+    # reason_codes es la CAUSA (siempre poblada para las 3 decisiones
+    # terminales) -- distinta de issues/validation_issue_codes (solo se
+    # llena cuando hubo un fallo de validación real). Si el llamador no
+    # pasa reason_codes explícitamente, se reusa issues (compatibilidad
+    # con las ramas que sí representan un fallo técnico real, donde
+    # ambos campos deben coincidir: evidencia no disponible, LLM no
+    # disponible, límite de propuestas alcanzado, etc.).
+    if reason_codes is None:
+        reason_codes = issues
+    reason_codes = tuple(reason_codes)
+    if decision in _TERMINAL_DECISIONS_REQUIRING_REASON_CODE and not reason_codes:
+        # Nunca se llega aquí en la práctica -- cada rama que produce
+        # una de estas 3 decisiones pasa su propio reason_codes real,
+        # nunca inventado a posteriori. Esto es un guardrail estructural
+        # para que un futuro llamador que lo olvide falle cerrado en
+        # vez de persistir una causa vacía en silencio.
+        raise ValueError(f"CORRECTION_PROPOSAL_TERMINAL_REASON_CODE_REQUIRED:{decision}")
     fp=compute_empty_correction_proposal_fingerprint(
         claim_id=claim_id, decision=decision, status=status,
         prompt_version=policy["correction_user_prompt_version"],
     )
     metrics=retry_metrics or {"llm_calls":0,"format_attempts":0,"format_retries":0,"schema_validation_attempts":0,"schema_retries":0,"total_response_retries":0}
     return CorrectionProposal("C07_"+claim_id+"_"+fp[:12],claim_id,section_id,decision,None,status,original,claim_fp,section_fp,
-        dict(claim_span_in_section) if claim_span_in_section is not None else None,None,None,"",fingerprint_text(""),"",original,(),tuple(issues),"NONE","NONE",(),(),None,(),(),"","",(),(),None,(),(),(),(),(),False,status in {"DEFERRED","REJECTED"},False,False,status,fp,policy["correction_user_prompt_version"],tuple(issues),tuple(path),tuple(raw_attempts),metrics)
+        dict(claim_span_in_section) if claim_span_in_section is not None else None,None,None,"",fingerprint_text(""),"",original,(),reason_codes,"NONE","NONE",(),(),None,(),(),"","",(),(),None,(),(),(),(),(),False,status in {"DEFERRED","REJECTED"},False,False,status,fp,policy["correction_user_prompt_version"],tuple(issues),tuple(path),tuple(raw_attempts),metrics)
 
 
 # Phase 6.2: construcción virtual estrictamente en memoria.

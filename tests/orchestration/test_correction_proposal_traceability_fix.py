@@ -213,6 +213,110 @@ def test_ground_truth_isolation_unchanged():
         assert "ground_truth" not in source.lower(), module.__name__
 
 
+# --- Ronda 2: caso real Exp04 (rerun real de 07 con --force-rerun) ---
+# S3_C1/S4_C1/S5_C4/S5_C5/S5_C6 (eligibility=MANUAL_REVIEW_REQUIRED) y
+# S5_C1 (eligibility=NO_CORRECTION_NEEDED) seguían con reason_codes=()
+# tras el primer fix -- porque las DOS ramas de elegibilidad (y las dos
+# ramas del propio parseo del LLM) nunca pasaban issues/reason_codes en
+# absoluto a _empty_proposal. Corregido: las 3 decisiones terminales
+# (NO_CORRECTION/DEFER_TO_MANUAL_REVIEW/NOT_CORRECTABLE) ahora exigen
+# reason_codes no vacío como invariante ESTRUCTURAL, no solo parcheado
+# rama por rama.
+
+@scenario("CC07. Requisito 2/9: TODA propuesta terminal DEFERRED/NOT_PROPOSED tiene reason_codes no vacío -- las 3 elegibilidades reales del Exp04, exhaustivo")
+def test_every_terminal_eligibility_branch_has_nonempty_reason_codes():
+    expected = {
+        "NO_CORRECTION_NEEDED": ("NO_CORRECTION", "NOT_PROPOSED", "NO_AUTOMATIC_CORRECTION_REQUIRED"),
+        "MANUAL_REVIEW_REQUIRED": ("DEFER_TO_MANUAL_REVIEW", "DEFERRED", "VERIFIER_REQUIRES_MANUAL_REVIEW"),
+        "NOT_CORRECTABLE_WITH_AVAILABLE_EVIDENCE": ("NOT_CORRECTABLE", "NOT_PROPOSED", "CLAIM_NOT_AUTOCORRECTABLE"),
+    }
+    for eligibility, (expected_decision, expected_status, expected_reason) in expected.items():
+        context = _base_correction_context(final_correction_eligibility=eligibility)
+        proposal = propose_correction(context, llm=None)
+        assert proposal.correction_decision == expected_decision, eligibility
+        assert proposal.proposal_status == expected_status, eligibility
+        assert proposal.final_proposal_status == expected_status, eligibility
+        # El requisito central: NUNCA reason_codes=() para estas 3 decisiones.
+        assert proposal.reason_codes == (expected_reason,), eligibility
+        # Requisito 5: validation_issue_codes vacío -- no hubo fallo de
+        # validación real, es una clasificación de política, nunca se
+        # rellena artificialmente.
+        assert proposal.validation_issue_codes == (), eligibility
+        # Requisito 6: decision_path refleja la rama causal real, no
+        # solo el paso genérico inicial.
+        assert len(proposal.decision_path) > 1, eligibility
+        assert proposal.decision_path[0] == "CORRECTION_RECOMMENDATION_REVIEWED"
+        assert f"ELIGIBILITY_{eligibility}" in proposal.decision_path
+
+
+@scenario("CC08. Requisito 4: el vocabulario usado es exactamente el canónico agregado (VERIFIER_REQUIRES_MANUAL_REVIEW / NO_AUTOMATIC_CORRECTION_REQUIRED / CLAIM_NOT_AUTOCORRECTABLE), registrado en CORRECTION_REASON_CODES")
+def test_new_canonical_reason_codes_are_registered():
+    from src.config.verification_policy_config import CORRECTION_REASON_CODES
+
+    for code in ("VERIFIER_REQUIRES_MANUAL_REVIEW", "NO_AUTOMATIC_CORRECTION_REQUIRED", "CLAIM_NOT_AUTOCORRECTABLE"):
+        assert code in CORRECTION_REASON_CODES
+
+
+@scenario("CC09. Requisito 3: no se inventa un reason_code a posteriori -- se origina en propose_correction, sobrevive intacto hasta la fila de trazabilidad del bundle")
+def test_reason_code_originates_in_propose_correction_not_in_traceability():
+    context = _base_correction_context(final_correction_eligibility="MANUAL_REVIEW_REQUIRED")
+    proposal = propose_correction(context, llm=None)
+    assert proposal.reason_codes == ("VERIFIER_REQUIRES_MANUAL_REVIEW",)
+
+    referential_result = {
+        "referential_validation_status": "VALID",
+        "joined_claim_records": (
+            {
+                "claim_verification_record": {
+                    "claim_verification_result": {
+                        "claim_id": "S1_C1", "claim_type": "SUBSTANTIVE_FACTUAL", "scientific_verdict": "PARTIALLY_SUPPORTED",
+                        "deterministic_issue_codes": (), "semantic_issue_codes": ("PARTIAL_SUPPORT",),
+                        "hallucination_risk": "MEDIUM", "llm_correction_recommendation": False,
+                        "manual_review_required": True, "confidence": None,
+                        "eligible_evidence": (), "evidence_used": (), "evidence_rejected": (),
+                        "claim_uid": "",
+                    },
+                    "section_id": "S1",
+                },
+                "correction_ids": (proposal.correction_id,),
+            },
+        ),
+        "joined_correction_records": (
+            {"correction_id": proposal.correction_id, "claim_id": "S1_C1", "section_id": "S1", "proposal": proposal.to_dict()},
+        ),
+        "rejected_join_candidates": (), "referential_issue_codes": (), "referential_warnings": (),
+        "orphan_records": (), "identity_conflicts": (), "aggregation_status": "VALID",
+        "metrics_status": "NOT_COMPUTED", "result_contract_valid": True,
+    }
+    result = build_provisional_traceability_rows(referential_result)
+    row = result.to_dict()["correction_traceability_rows"][0]
+    # La fila del bundle nunca calcula ni sintetiza reason_codes -- solo
+    # copia exactamente lo que propose_correction ya decidió.
+    assert row["reason_codes"] == proposal.reason_codes == ("VERIFIER_REQUIRES_MANUAL_REVIEW",)
+
+
+@scenario("CC10. Guardrail estructural: _empty_proposal falla cerrado si alguien intenta construir DEFER_TO_MANUAL_REVIEW/NO_CORRECTION/NOT_CORRECTABLE sin ningún reason_code")
+def test_empty_proposal_fails_closed_without_reason_code():
+    from src.tools.verification.corrections import _empty_proposal
+    from src.config.verification_policy_config import get_verification_input_policy
+
+    policy = get_verification_input_policy()
+    for decision, status in (
+        ("NO_CORRECTION", "NOT_PROPOSED"),
+        ("DEFER_TO_MANUAL_REVIEW", "DEFERRED"),
+        ("NOT_CORRECTABLE", "NOT_PROPOSED"),
+    ):
+        try:
+            _empty_proposal(
+                "cl1", "sec1", "claim", fingerprint_text("claim"), fingerprint_text("section"),
+                decision, status, ("PATH",), policy,
+            )
+        except ValueError as exc:
+            assert "CORRECTION_PROPOSAL_TERMINAL_REASON_CODE_REQUIRED" in str(exc)
+        else:
+            raise AssertionError(f"debía fallar cerrado sin reason_code para {decision}")
+
+
 if __name__ == "__main__":
     for fn in (
         test_deferred_preserves_reason_codes_and_cause,
@@ -221,6 +325,10 @@ if __name__ == "__main__":
         test_partially_supported_with_authorized_evidence_is_not_wrongly_deferred,
         test_missing_evidence_stays_fail_closed,
         test_ground_truth_isolation_unchanged,
+        test_every_terminal_eligibility_branch_has_nonempty_reason_codes,
+        test_new_canonical_reason_codes_are_registered,
+        test_reason_code_originates_in_propose_correction_not_in_traceability,
+        test_empty_proposal_fails_closed_without_reason_code,
     ):
         fn()
 

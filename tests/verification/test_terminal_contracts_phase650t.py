@@ -56,7 +56,20 @@ def localized_proposal(status="ACCEPTED_FOR_REVERIFICATION"):
 
 
 def empty(decision,status,issues=()):
-    return _empty_proposal("cl1","sec1","claim",fingerprint_text("claim"),fingerprint_text("section"),decision,status,("PATH",),get_verification_input_policy(),issues=issues)
+    reason_codes=None
+    if not issues and decision in {"NO_CORRECTION","DEFER_TO_MANUAL_REVIEW","NOT_CORRECTABLE"}:
+        # Contrato vigente: estas 3 decisiones terminales siempre exigen
+        # al menos un reason_code real (ver _empty_proposal). Se pasa
+        # aparte de issues/validation_issue_codes -- estos códigos son
+        # una CAUSA, no un fallo de validación (CORRECTION_VALIDATION_
+        # ISSUE_CODES es un vocabulario distinto) -- igual que hace la
+        # producción real, para no relajar el guardrail.
+        reason_codes=({
+            "NO_CORRECTION": "NO_AUTOMATIC_CORRECTION_REQUIRED",
+            "DEFER_TO_MANUAL_REVIEW": "VERIFIER_REQUIRES_MANUAL_REVIEW",
+            "NOT_CORRECTABLE": "CLAIM_NOT_AUTOCORRECTABLE",
+        }[decision],)
+    return _empty_proposal("cl1","sec1","claim",fingerprint_text("claim"),fingerprint_text("section"),decision,status,("PATH",),get_verification_input_policy(),issues=issues,reason_codes=reason_codes)
 
 
 def test_real_completed_claim_to_dict():
