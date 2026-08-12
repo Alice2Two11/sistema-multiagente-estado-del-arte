@@ -1,16 +1,28 @@
 from __future__ import annotations
-import re
-from .source_repair import as_list
-def norm_text(v): return re.sub(r'\s+',' ',str(v or '').strip().lower())
+from .source_repair import as_list, norm_text, section_allows_empty_papers
 def validate_outline(outline,valid_sources,min_sections,max_sections,source_repairs,unresolved_sources,coverage_repairs,unresolved_coverage):
  required_top=['title','objective','narrative_strategy','sections','paper_coverage_summary']; missing_top=[k for k in required_top if k not in outline]
  sections=outline.get('sections',[]); sections=sections if isinstance(sections,list) else []; before=len(sections);trim=False
- if len(sections)>max_sections:outline['sections']=sections[:max_sections];sections=outline['sections'];trim=True
- n=len(sections); count_valid=min_sections<=n<=max_sections; required=['section_id','section_title','section_type','purpose','key_arguments','evidence_needs']; allow_types={'introduccion','introducción','introduction','discusion','discusión','discussion','gaps','research_gaps','vacios','vacíos','cierre','closing','conclusion','conclusión','conclusiones','conclusions'}
+ if len(sections)>max_sections:
+  outline['sections']=sections[:max_sections];sections=outline['sections'];trim=True
+  # El trim debe ocurrir ANTES de leer paper_coverage_summary/section
+  # references -- de lo contrario used_in_sections queda con IDs de
+  # secciones ya eliminadas (S6/S7...), referencias obsoletas que
+  # ningún consumidor posterior podría resolver. Se reconstruye aquí
+  # mismo, inmediatamente después del trim, sobre el MISMO outline que
+  # se persiste -- nunca se deja para un paso separado que podría
+  # olvidarse.
+  kept_ids={str(s.get('section_id','')).strip() for s in sections if isinstance(s,dict)}
+  for item in as_list(outline.get('paper_coverage_summary',[])):
+   if not isinstance(item,dict):continue
+   used_in=item.get('used_in_sections')
+   if isinstance(used_in,list):
+    item['used_in_sections']=[sid for sid in used_in if str(sid).strip() in kept_ids]
+ n=len(sections); count_valid=min_sections<=n<=max_sections; required=['section_id','section_title','section_type','purpose','key_arguments','evidence_needs']
  missing_rows=[];invalid=[];problematic=[];allowed=[];used=set()
  for sec in sections:
   if not isinstance(sec,dict):continue
-  miss=[k for k in required if sec.get(k) in [None,'',[],{}]]; st=norm_text(sec.get('section_type')); title=norm_text(sec.get('section_title')); papers=as_list(sec.get('papers_to_use',[])); allow=st in allow_types or any(x in title for x in ['introducción','introduccion','introduction','discusión','discusion','discussion','vacíos','vacios','gaps','conclusión','conclusion','conclusiones','conclusions','perspectivas','tendencias','cierre'])
+  miss=[k for k in required if sec.get(k) in [None,'',[],{}]]; papers=as_list(sec.get('papers_to_use',[])); allow=section_allows_empty_papers(sec)
   if not allow and not papers:miss.append('papers_to_use');problematic.append({'section_id':sec.get('section_id'),'section_title':sec.get('section_title'),'section_type':sec.get('section_type')})
   if allow and not papers:allowed.append({'section_id':sec.get('section_id'),'section_title':sec.get('section_title'),'section_type':sec.get('section_type')})
   for p in papers:
