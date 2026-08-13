@@ -22,6 +22,7 @@ from src.contracts.agent_input import (
 from src.contracts.agent_result import AgentResult, QualityStatus
 from src.runtime.draft_writing_protocol import build_draft_fingerprints
 from src.state.fingerprints import fingerprint_mapping, sha256_file
+from src.tools.evaluation.llm_judge import parse_json_safely
 
 
 LEGACY_RUNTIME_VERSIONS = {
@@ -61,24 +62,41 @@ class DraftWritingRuntime:
         return self.invoke_fn(prompt)
 
     def parse(self, raw):
-        text = getattr(raw, "content", raw)
-        if isinstance(text, dict):
-            return text
-        text = str(text)
-        candidates = [text]
-        candidates += re.findall(r"```(?:json)?\s*(.*?)```", text, flags=re.S | re.I)
-        start = text.find("{")
-        end = text.rfind("}")
-        if start >= 0 and end > start:
-            candidates.append(text[start : end + 1])
-        for candidate in candidates:
-            try:
-                parsed = json.loads(candidate)
-                if isinstance(parsed, dict):
-                    return parsed
-            except Exception:
-                pass
-        raise ValueError("INVALID_LLM_OUTPUT")
+        # Extracción robusta del texto real de la respuesta -- reutiliza
+        # parse_json_safely (src/tools/evaluation/llm_judge.py, ya
+        # probado y usado en producción por 03B/08) en vez de duplicar
+        # lógica de extracción de JSON: maneja dict/list ya parseados,
+        # fences ```json ... ``` y ``` ... ```, y JSON puro, escaneando
+        # con json.JSONDecoder().raw_decode desde cualquier {/[ -- más
+        # robusto que buscar el primer '{' y el último '}' a mano (evita
+        # capturar basura tras el objeto JSON real).
+        content = getattr(raw, "content", raw)
+        if isinstance(content, dict):
+            return content
+        if isinstance(content, list):
+            # Bloques de contenido estructurado del proveedor (ej. Anthropic/
+            # OpenAI "content blocks": [{"type": "text", "text": "..."}]) --
+            # se concatena el texto de cada bloque, nunca se serializa la
+            # lista completa como texto crudo (eso rompería el parseo).
+            parts: list[str] = []
+            for block in content:
+                if isinstance(block, Mapping):
+                    block_text = block.get("text")
+                    if isinstance(block_text, str):
+                        parts.append(block_text)
+                elif isinstance(block, str):
+                    parts.append(block)
+            content = "\n".join(parts)
+        try:
+            parsed = parse_json_safely(content)
+        except Exception as exc:
+            # Fail-closed: nunca se convierte una respuesta inválida en
+            # un dict vacío ni en draft_text="" -- se propaga un error
+            # explícito, igual que antes.
+            raise ValueError("INVALID_LLM_OUTPUT") from exc
+        if not isinstance(parsed, dict):
+            raise ValueError("INVALID_LLM_OUTPUT")
+        return parsed
 
 
 def build_openai_draft_runtime(

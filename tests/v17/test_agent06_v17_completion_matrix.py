@@ -190,7 +190,7 @@ class TestAgent06V17CompletionMatrix(unittest.TestCase):
                 QualityStatus.NEEDS_REVISION,
             )
             paths = sorted(
-                (Path(config["output_dir"]) / "raw_section_outputs").glob(
+                (Path(config["output_dir"]) / "raw_section_outputs").rglob(
                     "S1_attempt_*_validation.json"
                 )
             )
@@ -202,7 +202,10 @@ class TestAgent06V17CompletionMatrix(unittest.TestCase):
             for item in errors:
                 self.assertEqual(len(item), len(dict.fromkeys(item)))
                 self.assertIn("invalid_citation", item)
-                self.assertIn("EMPTY_DRAFT_TEXT", item)
+                # Fail-closed sin heurísticas (normalization.py): una
+                # oración con cita inválida se preserva en draft_text sin
+                # inventar una cita -- nunca colapsa en EMPTY_DRAFT_TEXT.
+                self.assertNotIn("EMPTY_DRAFT_TEXT", item)
             results.append(errors)
         self.assertEqual(results[0], results[1])
 
@@ -234,7 +237,7 @@ class TestAgent06V17CompletionMatrix(unittest.TestCase):
         _, _, _, _, config, executed = self._execute(policy=HYBRID)
         self.assertEqual(executed.result.quality_status, QualityStatus.APPROVED)
         traces = sorted(
-            (Path(config["output_dir"]) / "raw_section_outputs").glob(
+            (Path(config["output_dir"]) / "raw_section_outputs").rglob(
                 "*_rag_trace.json"
             )
         )

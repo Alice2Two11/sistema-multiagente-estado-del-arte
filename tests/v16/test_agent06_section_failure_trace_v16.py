@@ -41,8 +41,8 @@ class TestAgent06SectionFailureTraceV16(unittest.TestCase):
         self.assertTrue(report["last_attempt_errors"])
 
         for attempt in (1, 2, 3):
-            raw = env.out / "raw_section_outputs" / f"S1_attempt_{attempt}.txt"
-            validation = env.out / "raw_section_outputs" / f"S1_attempt_{attempt}_validation.json"
+            raw = env.out / "raw_section_outputs" / "agent_attempt_01" / f"S1_attempt_{attempt}.txt"
+            validation = env.out / "raw_section_outputs" / "agent_attempt_01" / f"S1_attempt_{attempt}_validation.json"
             self.assertTrue(raw.exists())
             self.assertTrue(validation.exists())
             payload = json.loads(validation.read_text(encoding="utf-8"))

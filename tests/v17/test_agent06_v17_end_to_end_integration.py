@@ -141,7 +141,7 @@ class TestAgent06V17EndToEndIntegration(unittest.TestCase):
             self.assertTrue((group.groupby("source_filename").size() <= HYBRID["max_candidates_per_source"]).all())
             self.assertLessEqual(sum(len(str(value)) for value in group["text"]), HYBRID["max_evidence_chars"])
 
-        traces = list((Path(cfg["output_dir"]) / "raw_section_outputs").glob("*_rag_trace.json"))
+        traces = list((Path(cfg["output_dir"]) / "raw_section_outputs").rglob("*_rag_trace.json"))
         self.assertTrue(traces)
         for trace_path in traces:
             trace = json.loads(trace_path.read_text())

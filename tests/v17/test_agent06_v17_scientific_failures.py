@@ -47,7 +47,11 @@ class TestAgent06V17ScientificFailures(unittest.TestCase):
     @staticmethod
     def _attempt_validations(cfg: dict, section_id: str = "S1") -> list[dict]:
         raw = Path(cfg["output_dir"]) / "raw_section_outputs"
-        paths = sorted(raw.glob(f"{section_id}_attempt_*_validation.json"))
+        # raw_section_outputs ahora versiona por agent_attempt_NN/ (ver
+        # draft_writing_agent.py) -- rglob localiza los archivos de
+        # validación sin importar bajo qué intento externo quedaron,
+        # sin necesitar conocer el número exacto aquí.
+        paths = sorted(raw.rglob(f"{section_id}_attempt_*_validation.json"))
         return [json.loads(path.read_text()) for path in paths]
 
     def _assert_section_failure(self, mode: str, expected_fragment: str):
@@ -74,8 +78,8 @@ class TestAgent06V17ScientificFailures(unittest.TestCase):
             self.assertIn(expected_fragment, json.dumps(attempt, ensure_ascii=False))
 
         raw = Path(cfg["output_dir"]) / "raw_section_outputs"
-        self.assertEqual(len(list(raw.glob("S1_attempt_*.txt"))), 3)
-        self.assertEqual(len(list(raw.glob("S1_attempt_*_rag_trace.json"))), 3)
+        self.assertEqual(len(list(raw.rglob("S1_attempt_*.txt"))), 3)
+        self.assertEqual(len(list(raw.rglob("S1_attempt_*_rag_trace.json"))), 3)
         with self.assertRaisesRegex(
             RuntimeError,
             "DRAFT_COMMIT_REQUIRES_APPROVED_RESULT",
@@ -95,7 +99,12 @@ class TestAgent06V17ScientificFailures(unittest.TestCase):
         self.assertEqual(len(attempts), 3)
         for attempt in attempts:
             self.assertIn("invalid_citation", attempt["validation_errors"])
-            self.assertIn("EMPTY_DRAFT_TEXT", attempt["validation_errors"])
+            # Fail-closed sin heurísticas (ver normalization.py): una
+            # oración con cita inválida ya NUNCA se convierte en
+            # EMPTY_DRAFT_TEXT -- se preserva en draft_text sin cita
+            # inventada, y el motivo real (invalid_citation) es la única
+            # causa reportada.
+            self.assertNotIn("EMPTY_DRAFT_TEXT", attempt["validation_errors"])
             self.assertIn(
                 "invalid_citation",
                 attempt["original_validation"]["citation_errors"],
@@ -108,7 +117,11 @@ class TestAgent06V17ScientificFailures(unittest.TestCase):
         self.assertEqual(len(attempts), 3)
         for attempt in attempts:
             self.assertIn("uncited_substantive_sentence", attempt["validation_errors"])
-            self.assertIn("EMPTY_DRAFT_TEXT", attempt["validation_errors"])
+            # Mismo contrato: una oración sustantiva sin cita se preserva
+            # en draft_text (nunca se borra, nunca se vacía la sección
+            # completa) -- EMPTY_DRAFT_TEXT nunca debe aparecer como
+            # consecuencia de esto.
+            self.assertNotIn("EMPTY_DRAFT_TEXT", attempt["validation_errors"])
 
     def test_unsupported_numeric_value_remains_unchanged(self):
         self._assert_section_failure(

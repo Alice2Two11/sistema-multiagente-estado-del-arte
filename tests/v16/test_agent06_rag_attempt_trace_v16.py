@@ -34,7 +34,7 @@ class TestAgent06RagAttemptTraceV16(unittest.TestCase):
         report = json.loads((env.out / "draft_validation_report.json").read_text(encoding="utf-8"))
         self.assertFalse(report["validation_ok"])
         for attempt in (1, 2, 3):
-            trace_path = env.out / "raw_section_outputs" / f"S1_attempt_{attempt}_rag_trace.json"
+            trace_path = env.out / "raw_section_outputs" / "agent_attempt_02" / f"S1_attempt_{attempt}_rag_trace.json"
             self.assertTrue(trace_path.exists())
             trace = json.loads(trace_path.read_text(encoding="utf-8"))
             self.assertEqual(trace["section_id"], "S1")

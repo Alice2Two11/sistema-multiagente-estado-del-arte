@@ -175,10 +175,23 @@ def normalize_generated_section(section, allowed_pairs):
 
         pairs = existing or declared
 
-        # Una oración sustantiva sin cita permitida se elimina,
-        # preservando la política de trazabilidad original.
-        if is_substantive_sentence(sent) and not pairs:
-            continue
+        # FAIL-CLOSED, sin heurísticas: si la oración ya tenía citas
+        # inline válidas (existing) o coincide TEXTUALMENTE, de forma
+        # exacta y determinista (declared -- comparación de igualdad de
+        # strings normalizados, nunca fuzzy/semántica), con un claim que
+        # ya trae sus propias citas, se hereda esa correspondencia --
+        # nunca altera el contenido de la afirmación, solo recupera
+        # citas que el propio LLM ya asoció a ese texto exacto.
+        #
+        # Si NO existe esa correspondencia segura (pairs vacío), la
+        # oración NUNCA se borra ni recibe una cita inventada: se
+        # preserva tal cual en draft_text, sin claim_entry asociado, para
+        # que validate_generated_section() reporte la causa real
+        # (uncited_substantive_sentence / missing_claim_for_sentence /
+        # claim_citation_mismatch, según corresponda) y Agent06 pueda
+        # pedir revisión -- nunca se convierte en EMPTY_DRAFT_TEXT por
+        # una normalización que no pudo asociar la oración a un claim.
+        preserved_without_claim = is_substantive_sentence(sent) and not pairs
 
         base = safe_str(
             CITATION_RE.sub("", sent)
@@ -213,6 +226,13 @@ def normalize_generated_section(section, allowed_pairs):
         )
 
         kept.append(normalized)
+
+        if preserved_without_claim:
+            # Sin correspondencia segura -- se preserva el texto, pero
+            # nunca se inventa un claim_entry ni una cita para él. La
+            # oración sigue en draft_text (arriba) para que la
+            # validación posterior detecte y reporte el problema real.
+            continue
 
         if is_substantive_sentence(normalized):
             claim_entry = {

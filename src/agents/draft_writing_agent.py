@@ -415,7 +415,21 @@ class DraftWritingAgent:
         retrieval_rounds = 0
         validation_calls = 0
         out = Path(agent_input.agent_context.output_directory)
-        raw_dir = out / "raw_section_outputs"
+        # Versionado por intento EXTERNO del orquestador (agent_input.
+        # attempt_number) -- distinto del contador interno de reintentos
+        # por sección (generation_attempt, usado en el nombre de cada
+        # archivo dentro de este subdirectorio). Sin esto, una segunda
+        # ejecución externa de 06 (tras RETRY/HALT_STAGE) sobrescribía en
+        # silencio los .txt/_validation.json/_rag_trace.json del intento
+        # externo anterior, en el MISMO directorio -- perdiendo toda
+        # trazabilidad histórica de por qué falló un intento previo.
+        # raw_section_outputs sigue siendo el artefacto de referencia (un
+        # único ArtifactReference tipo "DIRECTORY", sin cambios en su
+        # nombre ni en cómo se registra) -- solo cambia su estructura
+        # interna, nunca leída directamente por 07/08 ni por ningún otro
+        # consumidor del pipeline (confirmado: ningún módulo fuera de
+        # este archivo y artifacts.py referencia raw_section_outputs).
+        raw_dir = out / "raw_section_outputs" / f"agent_attempt_{agent_input.attempt_number:02d}"
         raw_dir.mkdir(parents=True, exist_ok=True)
 
         try:
