@@ -42,7 +42,21 @@ LEGACY_RUNTIME_VERSIONS = {
     # 06 producido bajo una versión anterior -- por eso participa en el
     # fingerprint (ver _draft_signature) y en la validación de resume
     # (ver _manifest_versions_match), sin necesitar --force-rerun.
-    "normalization_version": "sentence_claim_exact_match_preserve_unmatched_v1",
+    #
+    # v2 (sufijo "_immediate_numeric_salvage_v2"): el algoritmo de
+    # ACEPTACIÓN de una sección también cambió -- _salvage_numeric_
+    # only_section ahora se intenta INMEDIATAMENTE tras CADA intento
+    # interno cuya validación falla EXCLUSIVAMENTE por UNSUPPORTED_
+    # NUMERIC_VALUE:*, no solo una vez al final sobre el último intento
+    # (logs[-1]). Un intento intermedio numeric-only-salvageable ya no
+    # se pierde silenciosamente si un intento POSTERIOR vuelve a fallar
+    # con errores mixtos -- una sección que antes terminaba
+    # SECTION_VALIDATION_FAILED ahora puede aceptarse. Mismo criterio
+    # fail-closed heredado sin cambios (_unsupported_numeric_values):
+    # cualquier error de cita/claim/estructura sigue desactivando el
+    # salvage por completo, y nunca se reemplaza/inventa un valor
+    # numérico -- solo se descartan oraciones/claims que lo contienen.
+    "normalization_version": "sentence_claim_exact_match_preserve_unmatched_v1_immediate_numeric_salvage_v2",
 }
 HYBRID_RUNTIME_VERSIONS = {
     "stage_version": "06_AGENTIC_V17_HYBRID_QUANTITATIVE_SOURCE_AWARE",
@@ -50,7 +64,7 @@ HYBRID_RUNTIME_VERSIONS = {
     "quantitative_selection_version": "confirmed_literal_greedy_coverage_v1",
     "budget_version": "source_aware_exact_total_v1",
     "validation_version": "legacy_notebook06_validation_v1",
-    "normalization_version": "sentence_claim_exact_match_preserve_unmatched_v1",
+    "normalization_version": "sentence_claim_exact_match_preserve_unmatched_v1_immediate_numeric_salvage_v2",
 }
 REQUIRED_DRAFT_ARTIFACTS = (
     "state_of_art_draft.json",

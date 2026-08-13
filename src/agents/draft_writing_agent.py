@@ -71,7 +71,7 @@ LEGACY_VERSIONS = {
     # src/adapters/draft_writing_runtime.py (duplicación preexistente
     # de estas constantes entre ambos archivos -- no introducida por
     # este cambio, pero ambas copias deben mantenerse sincronizadas).
-    "normalization_version": "sentence_claim_exact_match_preserve_unmatched_v1",
+    "normalization_version": "sentence_claim_exact_match_preserve_unmatched_v1_immediate_numeric_salvage_v2",
 }
 HYBRID_VERSIONS = {
     "stage_version": "06_AGENTIC_V17_HYBRID_QUANTITATIVE_SOURCE_AWARE",
@@ -79,7 +79,7 @@ HYBRID_VERSIONS = {
     "quantitative_selection_version": "confirmed_literal_greedy_coverage_v1",
     "budget_version": "source_aware_exact_total_v1",
     "validation_version": "legacy_notebook06_validation_v1",
-    "normalization_version": "sentence_claim_exact_match_preserve_unmatched_v1",
+    "normalization_version": "sentence_claim_exact_match_preserve_unmatched_v1_immediate_numeric_salvage_v2",
 }
 
 
@@ -415,6 +415,87 @@ class DraftWritingAgent:
 
         return candidate, removed_sentences, values
 
+    def _try_immediate_numeric_salvage(
+        self,
+        *,
+        sid: str,
+        generation_attempt: int,
+        normalized: Mapping[str, Any],
+        validation: Mapping[str, Any],
+        allowed: set[tuple[str, str]],
+        section: Mapping[str, Any],
+        evidence: Sequence[Mapping[str, Any]],
+        raw_dir: Path,
+    ) -> tuple[dict[str, Any] | None, dict[str, Any] | None, int]:
+        """
+        Deterministic numeric salvage, intentado INMEDIATAMENTE sobre el
+        intento que acaba de generarse -- nunca esperando a que se agoten
+        todos los intentos internos. Se activa únicamente cuando la
+        validación de ESTE intento falla exclusivamente por
+        UNSUPPORTED_NUMERIC_VALUE:* (fail-closed heredado sin cambios de
+        _unsupported_numeric_values: cualquier error de cita, claim o
+        estructura desactiva el salvage por completo).
+
+        Devuelve (sección_aceptada_o_None, entrada_de_log_o_None,
+        validation_calls_delta). Si el salvage no aplica o no logra pasar
+        validate_generated_section, devuelve (None, None, 0) -- el
+        llamador simplemente continúa con el siguiente intento normal,
+        sin consumir ninguna llamada LLM adicional por este intento de
+        salvage en sí (es determinista, nunca invoca al LLM).
+        """
+        salvage = self._salvage_numeric_only_section(normalized, validation, allowed)
+        if salvage is None:
+            return None, None, 0
+
+        salvaged_section, removed_sentences, removed_values = salvage
+        salvage_validation = validate_generated_section(salvaged_section, section, evidence)
+        salvaged_section["section_validation"] = salvage_validation
+
+        salvage_tag = f"numeric_salvage_from_{generation_attempt}"
+        salvage_raw_path = write_raw_section_output(
+            raw_dir, sid, salvage_tag,
+            json.dumps(salvaged_section, ensure_ascii=False, indent=2),
+        )
+        salvage_validation_payload = {
+            "section_id": sid,
+            "generation_attempt": salvage_tag,
+            "mode": "deterministic_numeric_sentence_salvage",
+            "salvaged_from_attempt": generation_attempt,
+            "validation_ok": bool(salvage_validation.get("validation_ok")),
+            "validation_errors": self._unique_validation_items(
+                list(salvage_validation.get("errors") or [])
+                + list(salvage_validation.get("citation_errors") or [])
+                + list(salvage_validation.get("claim_errors") or [])
+                + list(salvage_validation.get("numeric_errors") or [])
+            ),
+            "numeric_support_errors": list(salvage_validation.get("numeric_errors") or []),
+            "removed_unsupported_numeric_values": removed_values,
+            "removed_sentences": removed_sentences,
+            "word_count": count_words(salvaged_section.get("draft_text", "")),
+            "citation_count": len(CITATION_RE.findall(str(salvaged_section.get("draft_text", "")))),
+            "raw_output_path": str(salvage_raw_path),
+        }
+        salvage_validation_path = write_raw_section_validation(
+            raw_dir, sid, salvage_tag, salvage_validation_payload,
+        )
+        log_entry = {
+            "attempt": salvage_tag,
+            "mode": "deterministic_numeric_sentence_salvage",
+            "salvaged_from_attempt": generation_attempt,
+            "validation": salvage_validation,
+            "attempt_validation_path": str(salvage_validation_path),
+            "removed_unsupported_numeric_values": removed_values,
+            "removed_sentences": removed_sentences,
+        }
+
+        if bool(salvage_validation.get("validation_ok")):
+            return salvaged_section, log_entry, 1
+        # El salvage se intentó y quedó registrado para auditoría, pero
+        # no logró pasar la validación completa -- se descarta como
+        # sección aceptada; el llamador sigue con el siguiente intento
+        # normal (fail-closed: nunca se acepta un salvage que no valida).
+        return None, log_entry, 1
+
     def execute(self, agent_input):
         start = datetime.now(timezone.utc).isoformat()
         llm_calls = 0
@@ -749,6 +830,40 @@ class DraftWritingAgent:
                     if validation["validation_ok"]:
                         accepted = normalized
                         break
+
+                    # Salvage numérico INMEDIATO sobre ESTE mismo intento
+                    # (nunca esperando a que se agoten todos los intentos
+                    # internos -- ver _try_immediate_numeric_salvage para
+                    # el criterio fail-closed heredado sin cambios). Si
+                    # un intento intermedio falla EXCLUSIVAMENTE por
+                    # UNSUPPORTED_NUMERIC_VALUE:*, se intenta reparar
+                    # determinísticamente aquí mismo, sin consumir un
+                    # intento LLM adicional -- antes, este intento se
+                    # perdía silenciosamente si el SIGUIENTE intento LLM
+                    # volvía a fallar por errores mixtos, porque el
+                    # salvage solo se probaba una vez, al final, sobre el
+                    # ÚLTIMO intento (logs[-1]).
+                    (
+                        salvaged_accepted,
+                        salvage_log_entry,
+                        salvage_validation_calls,
+                    ) = self._try_immediate_numeric_salvage(
+                        sid=sid,
+                        generation_attempt=generation_attempt,
+                        normalized=normalized,
+                        validation=validation,
+                        allowed=allowed,
+                        section=section,
+                        evidence=evidence,
+                        raw_dir=raw_dir,
+                    )
+                    validation_calls += salvage_validation_calls
+                    if salvage_log_entry is not None:
+                        logs.append(salvage_log_entry)
+                    if salvaged_accepted is not None:
+                        accepted = salvaged_accepted
+                        break
+
                     previous_errors = (
                         list(validation.get("errors") or [])
                         + citation_errors
@@ -757,99 +872,6 @@ class DraftWritingAgent:
                     )
 
                 attempt_logs[sid] = logs
-
-                # ----------------------------------------------------------
-                # Final deterministic salvage:
-                # only after all LLM revision attempts have been exhausted,
-                # and only when the remaining failures are exclusively
-                # UNSUPPORTED_NUMERIC_VALUE.
-                # ----------------------------------------------------------
-                if accepted is None and normalized is not None and logs:
-                    last_validation = logs[-1].get("validation") or {}
-                    salvage = self._salvage_numeric_only_section(
-                        normalized,
-                        last_validation,
-                        allowed,
-                    )
-
-                    if salvage is not None:
-                        salvaged_section, removed_sentences, removed_values = salvage
-                        salvage_validation = validate_generated_section(
-                            salvaged_section,
-                            section,
-                            evidence,
-                        )
-                        validation_calls += 1
-                        salvaged_section["section_validation"] = salvage_validation
-
-                        salvage_tag = "numeric_salvage"
-                        salvage_raw_path = write_raw_section_output(
-                            raw_dir,
-                            sid,
-                            salvage_tag,
-                            json.dumps(
-                                salvaged_section,
-                                ensure_ascii=False,
-                                indent=2,
-                            ),
-                        )
-                        salvage_validation_payload = {
-                            "section_id": sid,
-                            "generation_attempt": salvage_tag,
-                            "mode": "deterministic_numeric_sentence_salvage",
-                            "validation_ok": bool(
-                                salvage_validation.get("validation_ok")
-                            ),
-                            "validation_errors": self._unique_validation_items(
-                                list(salvage_validation.get("errors") or [])
-                                + list(
-                                    salvage_validation.get("citation_errors") or []
-                                )
-                                + list(
-                                    salvage_validation.get("claim_errors") or []
-                                )
-                                + list(
-                                    salvage_validation.get("numeric_errors") or []
-                                )
-                            ),
-                            "numeric_support_errors": list(
-                                salvage_validation.get("numeric_errors") or []
-                            ),
-                            "removed_unsupported_numeric_values": removed_values,
-                            "removed_sentences": removed_sentences,
-                            "word_count": count_words(
-                                salvaged_section.get("draft_text", "")
-                            ),
-                            "citation_count": len(
-                                CITATION_RE.findall(
-                                    str(salvaged_section.get("draft_text", ""))
-                                )
-                            ),
-                            "raw_output_path": str(salvage_raw_path),
-                        }
-                        salvage_validation_path = write_raw_section_validation(
-                            raw_dir,
-                            sid,
-                            salvage_tag,
-                            salvage_validation_payload,
-                        )
-
-                        logs.append(
-                            {
-                                "attempt": salvage_tag,
-                                "mode": "deterministic_numeric_sentence_salvage",
-                                "validation": salvage_validation,
-                                "attempt_validation_path": str(
-                                    salvage_validation_path
-                                ),
-                                "removed_unsupported_numeric_values": removed_values,
-                                "removed_sentences": removed_sentences,
-                            }
-                        )
-                        attempt_logs[sid] = logs
-
-                        if salvage_validation.get("validation_ok") is True:
-                            accepted = salvaged_section
 
                 if accepted is None:
                     last_validation = (

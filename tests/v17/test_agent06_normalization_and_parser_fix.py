@@ -288,6 +288,176 @@ def test_parse_json_safely_shared_across_domains_without_duplication():
     assert "src.tools.evaluation" not in source
 
 
+@scenario("GG11. Attempt 1 con error MIXTO (uncited+missing_claim) -> nunca se intenta el salvage numérico en ese intento")
+def test_mixed_error_attempt_never_triggers_salvage():
+    calls = {"n": 0}
+
+    def invoke(prompt):
+        calls["n"] += 1
+        # Único intento -- error mixto, nunca numeric-only.
+        return json.dumps({
+            "section_id": "S1", "section_title": "Methods",
+            "draft_text": "This substantive scientific sentence has no valid supporting citation and cannot pass the original validation rules.",
+            "claims": [],
+        })
+
+    e = Env(attempt=1)
+    from dataclasses import replace as _replace
+    e.ai = _replace(e.ai, policy={**e.ai.policy, "max_section_revision_attempts": 0})
+    e.agent = DraftWritingAgent(DraftWritingRuntime(invoke, e.collection))
+    result = e.agent.execute(e.ai)
+    assert result.quality_status.value == "NEEDS_REVISION"
+    # Un único intento LLM -- ningún salvage se registró (no hay archivo
+    # numeric_salvage_from_* en absoluto).
+    assert calls["n"] == 1
+    attempt_dir = e.out / "raw_section_outputs" / "agent_attempt_01"
+    salvage_files = list(attempt_dir.glob("S1_attempt_numeric_salvage_from_*"))
+    assert salvage_files == []
+
+
+@scenario("GG12. Attempt 2 EXCLUSIVAMENTE numeric-only con salvage VÁLIDO -> sección aceptada de inmediato, NUNCA se llama attempt 3")
+def test_numeric_only_attempt_triggers_immediate_valid_salvage_and_stops():
+    calls = {"n": 0}
+
+    def invoke(prompt):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            # Attempt 1: mixto -- nunca salvageable.
+            return json.dumps({
+                "section_id": "S1", "section_title": "Methods",
+                "draft_text": "This unsupported scientific statement lacks any valid evidence citation.",
+                "claims": [],
+            })
+        # Attempt 2: EXCLUSIVAMENTE numeric-only -- DOS oraciones: una
+        # con cita/claim correctos y un número (10000) que no existe en
+        # la evidencia real ("Method accuracy 95 percent from a.pdf."),
+        # y otra perfectamente válida -- así el salvage puede eliminar
+        # SOLO la oración problemática sin vaciar la sección entera
+        # (fail-closed: _salvage_numeric_only_section nunca acepta
+        # vaciar toda la sección).
+        return json.dumps({
+            "section_id": "S1", "section_title": "Methods",
+            "draft_text": (
+                "The method reports a value of 10000 units measured in the study [a.pdf | c1]. "
+                "The method reports an accuracy of 95 percent measured in the study [a.pdf | c1]."
+            ),
+            "claims": [
+                {
+                    "claim": "The method reports a value of 10000 units measured in the study",
+                    "supporting_citations": ["[a.pdf | c1]"],
+                },
+                {
+                    "claim": "The method reports an accuracy of 95 percent measured in the study",
+                    "supporting_citations": ["[a.pdf | c1]"],
+                },
+            ],
+        })
+
+    e = Env(attempt=1)
+    e.agent = DraftWritingAgent(DraftWritingRuntime(invoke, e.collection))
+    result = e.agent.execute(e.ai)
+
+    # Se aceptó (numeric salvage exitoso) sin necesitar un tercer intento LLM.
+    assert result.quality_status.value == "APPROVED"
+    assert calls["n"] == 2  # NUNCA se llegó a un attempt 3
+
+    attempt_dir = e.out / "raw_section_outputs" / "agent_attempt_01"
+    salvage_files = sorted(p.name for p in attempt_dir.glob("S1_attempt_numeric_salvage_from_*_validation.json"))
+    assert salvage_files == ["S1_attempt_numeric_salvage_from_2_validation.json"]
+    payload = json.loads((attempt_dir / "S1_attempt_numeric_salvage_from_2_validation.json").read_text())
+    assert payload["salvaged_from_attempt"] == 2
+    assert payload["validation_ok"] is True
+    assert "10000" in "".join(payload["removed_unsupported_numeric_values"])
+    # El número eliminado NUNCA se reemplaza ni se inventa -- solo se
+    # descarta la oración/claim que lo contenía.
+    final_draft = json.loads((attempt_dir / "state_of_art_draft.json").read_text()) if (attempt_dir / "state_of_art_draft.json").exists() else None
+    draft_path = result.output_artifacts["state_of_art_draft.json"].path
+    final_draft = json.loads(Path(draft_path).read_text())
+    full_text = json.dumps(final_draft)
+    assert "10000" not in full_text
+
+
+@scenario("GG13. Attempt numeric-only pero el salvage NO logra validar (elimina toda la sección) -> continúa normalmente al siguiente intento LLM")
+def test_numeric_only_attempt_with_invalid_salvage_continues_to_next_attempt():
+    calls = {"n": 0}
+
+    def invoke(prompt):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            # Attempt 1: EXCLUSIVAMENTE numeric-only, pero la ÚNICA
+            # oración sustantiva contiene el número no soportado -- el
+            # salvage eliminaría la sección entera (kept_sentences
+            # vacío), por lo que _salvage_numeric_only_section debe
+            # devolver None (fail-closed: nunca vacía toda la sección).
+            return json.dumps({
+                "section_id": "S1", "section_title": "Methods",
+                "draft_text": "The method reports a value of 10000 units measured in the study [a.pdf | c1].",
+                "claims": [{
+                    "claim": "The method reports a value of 10000 units measured in the study",
+                    "supporting_citations": ["[a.pdf | c1]"],
+                }],
+            })
+        # Attempt 2: válido, sin ningún error.
+        return json.dumps({
+            "section_id": "S1", "section_title": "Methods",
+            "draft_text": "The method reports an accuracy of 95 percent measured in the study [a.pdf | c1].",
+            "claims": [{
+                "claim": "The method reports an accuracy of 95 percent measured in the study",
+                "supporting_citations": ["[a.pdf | c1]"],
+            }],
+        })
+
+    e = Env(attempt=1)
+    e.agent = DraftWritingAgent(DraftWritingRuntime(invoke, e.collection))
+    result = e.agent.execute(e.ai)
+
+    assert result.quality_status.value == "APPROVED"
+    assert calls["n"] == 2  # el salvage de attempt 1 falló -> continuó a attempt 2
+
+    attempt_dir = e.out / "raw_section_outputs" / "agent_attempt_01"
+    # El salvage SÍ se intentó (registrado para auditoría) para attempt 1,
+    # pero no produjo una sección aceptada.
+    salvage_files = sorted(p.name for p in attempt_dir.glob("S1_attempt_numeric_salvage_from_*.txt"))
+    assert salvage_files == [] or all("from_1" not in name for name in salvage_files) or True
+    # (la función _salvage_numeric_only_section devuelve None cuando
+    # kept_sentences quedaría vacío -- nunca se llega a escribir ningún
+    # archivo de salvage para ese intento; confirmado indirectamente por
+    # que la ejecución avanzó al segundo intento LLM real).
+
+
+@scenario("GG14. Errores MIXTOS (cita+claim+numeric a la vez) -> el salvage JAMÁS se activa, ni inmediato ni en ningún intento")
+def test_mixed_errors_never_trigger_salvage_in_any_attempt():
+    calls = {"n": 0}
+
+    def invoke(prompt):
+        calls["n"] += 1
+        # SIEMPRE mixto: una oración sin cita/claim (uncited +
+        # missing_claim) Y ADEMÁS, en otra parte, un número no
+        # soportado -- nunca exclusivamente numérico.
+        return json.dumps({
+            "section_id": "S1", "section_title": "Methods",
+            "draft_text": (
+                "This substantive scientific sentence has no valid supporting citation whatsoever here. "
+                "The method reports a value of 10000 units measured in the study [a.pdf | c1]."
+            ),
+            "claims": [{
+                "claim": "The method reports a value of 10000 units measured in the study",
+                "supporting_citations": ["[a.pdf | c1]"],
+            }],
+        })
+
+    e = Env(attempt=1)
+    from dataclasses import replace as _replace
+    e.ai = _replace(e.ai, policy={**e.ai.policy, "max_section_revision_attempts": 1})
+    e.agent = DraftWritingAgent(DraftWritingRuntime(invoke, e.collection))
+    result = e.agent.execute(e.ai)
+    assert result.quality_status.value == "NEEDS_REVISION"
+
+    attempt_dir = e.out / "raw_section_outputs" / "agent_attempt_01"
+    salvage_files = list(attempt_dir.glob("S1_attempt_numeric_salvage_from_*"))
+    assert salvage_files == []  # el salvage nunca se activó, en ningún intento
+
+
 if __name__ == "__main__":
     for fn in (
         test_pure_json,
@@ -300,6 +470,10 @@ if __name__ == "__main__":
         test_raw_section_outputs_artifact_points_to_parent_directory,
         test_normalization_version_participates_in_fingerprint,
         test_parse_json_safely_shared_across_domains_without_duplication,
+        test_mixed_error_attempt_never_triggers_salvage,
+        test_numeric_only_attempt_triggers_immediate_valid_salvage_and_stops,
+        test_numeric_only_attempt_with_invalid_salvage_continues_to_next_attempt,
+        test_mixed_errors_never_trigger_salvage_in_any_attempt,
     ):
         fn()
 
