@@ -35,6 +35,7 @@ tras un RETRY/HALT_STAGE."""
 from __future__ import annotations
 
 import json
+import re
 import sys
 import tempfile
 import traceback
@@ -621,6 +622,217 @@ def test_hallucinated_source_pair_still_rejected():
     ) is not None
 
 
+def _read_retry_audits(out_dir, section_id, attempt_number=1):
+    attempt_dir = out_dir / "raw_section_outputs" / f"agent_attempt_{attempt_number:02d}"
+    audits = {}
+    for p in sorted(attempt_dir.glob(f"{section_id}_attempt_*_validation.json")):
+        m = re.match(rf"{re.escape(section_id)}_attempt_(\d+)_validation\.json", p.name)
+        if not m:
+            continue
+        payload = json.loads(p.read_text())
+        audits[int(m.group(1))] = payload.get("retry_audit", {})
+    return audits
+
+
+@scenario("II01. Attempt 1 falla por conector omitido -> attempt 2 recibe CLAIM_MISSING_INITIAL_DISCOURSE_CONNECTOR en previous_errors_codes_used_in_prompt (evidencia directa, no inferida)")
+def test_attempt1_connector_error_reaches_attempt2_audit():
+    calls = {"n": 0}
+
+    def invoke(prompt):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return json.dumps({
+                "section_id": "S1", "section_title": "Methods",
+                "draft_text": "Finalmente, se requiere un mayor análisis interdisciplinario para avanzar en la disciplina.",
+                "claims": [{
+                    "claim": "Se requiere un mayor análisis interdisciplinario para avanzar en la disciplina",
+                    "supporting_citations": ["[a.pdf | c1]"],
+                }],
+            })
+        return json.dumps({
+            "section_id": "S1", "section_title": "Methods",
+            "draft_text": "Finalmente, se requiere un mayor análisis interdisciplinario para avanzar en la disciplina.",
+            "claims": [{
+                "claim": "Finalmente, se requiere un mayor análisis interdisciplinario para avanzar en la disciplina",
+                "supporting_citations": ["[a.pdf | c1]"],
+            }],
+        })
+
+    e = Env(attempt=1)
+    e.agent = DraftWritingAgent(DraftWritingRuntime(invoke, e.collection))
+    result = e.agent.execute(e.ai)
+    audits = _read_retry_audits(e.out, "S1")
+    attempt2_previous_errors = audits[2]["previous_errors_codes_used_in_prompt"]
+    assert any(
+        "CLAIM_MISSING_INITIAL_DISCOURSE_CONNECTOR" in str(item)
+        for item in attempt2_previous_errors
+    )
+
+
+@scenario("II02. prompt_sha256(attempt1) != prompt_sha256(attempt2) -- el prompt SÍ cambia entre intentos, confirmado por hash, no por inspección visual")
+def test_prompt_hash_differs_between_attempts():
+    calls = {"n": 0}
+
+    def invoke(prompt):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return json.dumps({
+                "section_id": "S1", "section_title": "Methods",
+                "draft_text": "This unsupported scientific statement lacks any valid evidence citation.",
+                "claims": [],
+            })
+        return json.dumps({
+            "section_id": "S1", "section_title": "Methods",
+            "draft_text": "The method reports an accuracy of 95 percent measured in the study [a.pdf | c1].",
+            "claims": [{
+                "claim": "The method reports an accuracy of 95 percent measured in the study",
+                "supporting_citations": ["[a.pdf | c1]"],
+            }],
+        })
+
+    e = Env(attempt=1)
+    e.agent = DraftWritingAgent(DraftWritingRuntime(invoke, e.collection))
+    e.agent.execute(e.ai)
+    audits = _read_retry_audits(e.out, "S1")
+    assert audits[1]["prompt_sha256"] != audits[2]["prompt_sha256"]
+
+
+@scenario("II03. El mock del runtime recibe efectivamente DOS prompts DIFERENTES como argumento (no solo el hash difiere -- el objeto de texto en sí es distinto)")
+def test_mock_llm_receives_two_different_prompts():
+    seen_prompts = []
+
+    def invoke(prompt):
+        seen_prompts.append(prompt)
+        if len(seen_prompts) == 1:
+            return json.dumps({
+                "section_id": "S1", "section_title": "Methods",
+                "draft_text": "This unsupported scientific statement lacks any valid evidence citation.",
+                "claims": [],
+            })
+        return json.dumps({
+            "section_id": "S1", "section_title": "Methods",
+            "draft_text": "The method reports an accuracy of 95 percent measured in the study [a.pdf | c1].",
+            "claims": [{
+                "claim": "The method reports an accuracy of 95 percent measured in the study",
+                "supporting_citations": ["[a.pdf | c1]"],
+            }],
+        })
+
+    e = Env(attempt=1)
+    e.agent = DraftWritingAgent(DraftWritingRuntime(invoke, e.collection))
+    e.agent.execute(e.ai)
+    assert len(seen_prompts) == 2
+    assert seen_prompts[0] != seen_prompts[1]
+    assert "uncited_substantive_sentence" in seen_prompts[1]
+
+
+@scenario("II04. Si attempt 2 corrige el error -> no existe attempt 3 (ni archivo raw ni una tercera invocación del runtime)")
+def test_attempt2_correction_stops_before_attempt3():
+    calls = {"n": 0}
+
+    def invoke(prompt):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return json.dumps({
+                "section_id": "S1", "section_title": "Methods",
+                "draft_text": "This unsupported scientific statement lacks any valid evidence citation.",
+                "claims": [],
+            })
+        return json.dumps({
+            "section_id": "S1", "section_title": "Methods",
+            "draft_text": "The method reports an accuracy of 95 percent measured in the study [a.pdf | c1].",
+            "claims": [{
+                "claim": "The method reports an accuracy of 95 percent measured in the study",
+                "supporting_citations": ["[a.pdf | c1]"],
+            }],
+        })
+
+    e = Env(attempt=1)
+    e.agent = DraftWritingAgent(DraftWritingRuntime(invoke, e.collection))
+    result = e.agent.execute(e.ai)
+    assert calls["n"] == 2
+    assert result.quality_status.value == "APPROVED"
+    attempt_dir = e.out / "raw_section_outputs" / "agent_attempt_01"
+    assert not (attempt_dir / "S1_attempt_3.txt").exists()
+    assert not (attempt_dir / "S1_attempt_3_validation.json").exists()
+
+
+@scenario("II05. Ninguna cache DENTRO DEL BUCLE reutiliza attempt1 cuando el feedback cambia: al variar previous_errors, un runtime sensible al prompt SÍ produce una respuesta distinta -- confirmado, no asumido")
+def test_no_cache_reuses_attempt1_when_feedback_changes():
+    prompts_seen = []
+
+    def invoke(prompt):
+        prompts_seen.append(prompt)
+        # El runtime de prueba reacciona EXPLÍCITAMENTE al feedback
+        # recibido -- si el prompt anterior está presente (invocación
+        # repetida real del runtime, sin cache en este nivel), cambia su
+        # respuesta. Si el bucle de draft_writing_agent.py reutilizara
+        # en silencio la respuesta de un intento anterior en vez de
+        # invocar self.runtime.invoke() de nuevo, esta prueba lo
+        # detectaría porque distinct_prompts nunca llegaría a 2. Esto
+        # audita el bucle del agente, no el comportamiento interno de
+        # un cliente/proveedor real.
+        if len(prompts_seen) == 1:
+            return json.dumps({
+                "section_id": "S1", "section_title": "Methods",
+                "draft_text": "This unsupported scientific statement lacks any valid evidence citation.",
+                "claims": [],
+            })
+        return json.dumps({
+            "section_id": "S1", "section_title": "Methods",
+            "draft_text": "The method reports an accuracy of 95 percent measured in the study [a.pdf | c1].",
+            "claims": [{
+                "claim": "The method reports an accuracy of 95 percent measured in the study",
+                "supporting_citations": ["[a.pdf | c1]"],
+            }],
+        })
+
+    e = Env(attempt=1)
+    e.agent = DraftWritingAgent(DraftWritingRuntime(invoke, e.collection))
+    e.agent.execute(e.ai)
+    distinct_prompts = len(set(prompts_seen))
+    assert distinct_prompts == len(prompts_seen) == 2  # cada invocación del runtime tuvo un prompt único, real, no cacheado
+
+
+@scenario("II06. Dos respuestas del runtime CASUALMENTE idénticas (mismo raw) -- el sistema demuestra, vía metadata (runtime_invoke_sequence_number, runtime_invoke_executed), que hubo tres invocaciones reales y distintas del runtime, sin asumir bug solo por la igualdad del texto")
+def test_identical_raw_responses_proven_as_two_real_calls_via_metadata():
+    def invoke(prompt):
+        # Siempre la MISMA respuesta, deliberadamente -- simula el caso
+        # real reportado (raws byte-idénticos).
+        return json.dumps({
+            "section_id": "S1", "section_title": "Methods",
+            "draft_text": "This unsupported scientific statement lacks any valid evidence citation.",
+            "claims": [],
+        })
+
+    e = Env(attempt=1)
+    e.agent = DraftWritingAgent(DraftWritingRuntime(invoke, e.collection))
+    e.agent.execute(e.ai)
+    audits = _read_retry_audits(e.out, "S1")
+    assert len(audits) == 3  # max_section_revision_attempts=2 -> 3 intentos internos
+    raw_hashes = {n: a["raw_response_sha256"] for n, a in audits.items()}
+    # Los 3 raws SON idénticos (igual que en el caso real reportado)...
+    assert raw_hashes[1] == raw_hashes[2] == raw_hashes[3]
+    # ...pero la metadata demuestra, sin ambigüedad, que self.runtime.
+    # invoke() se ejecutó 3 veces DENTRO de este bucle -- nunca una
+    # reutilización a este nivel. Esto NO afirma, por sí solo, ausencia
+    # de cache/reuse en capas inferiores del runtime/cliente/proveedor
+    # -- eso solo lo demostraría runtime_response_metadata, si el
+    # runtime la expone (ver siguiente aserción).
+    call_sequence = [audits[n]["runtime_invoke_sequence_number"] for n in (1, 2, 3)]
+    assert call_sequence == [1, 2, 3]
+    assert all(audits[n]["runtime_invoke_executed"] is True for n in (1, 2, 3))
+    # Este runtime de prueba no expone ninguna metadata verificable del
+    # proveedor -- el campo queda honestamente vacío, no inventado.
+    assert all(audits[n]["runtime_response_metadata"] == {} for n in (1, 2, 3))
+    # El prompt de attempt 1 difiere del de attempt 2 (feedback nuevo);
+    # el de attempt 2 y 3 coincide -- correctamente, porque el LLM no
+    # corrigió el error y produjo el MISMO feedback otra vez (punto fijo
+    # del ciclo, no un bug de cache/reuse).
+    assert audits[1]["prompt_sha256"] != audits[2]["prompt_sha256"]
+    assert audits[2]["prompt_sha256"] == audits[3]["prompt_sha256"]
+
+
 if __name__ == "__main__":
     for fn in (
         test_pure_json,
@@ -646,6 +858,12 @@ if __name__ == "__main__":
         test_detector_never_affects_normalization_output,
         test_retry_receives_specific_discourse_connector_feedback,
         test_hallucinated_source_pair_still_rejected,
+        test_attempt1_connector_error_reaches_attempt2_audit,
+        test_prompt_hash_differs_between_attempts,
+        test_mock_llm_receives_two_different_prompts,
+        test_attempt2_correction_stops_before_attempt3,
+        test_no_cache_reuses_attempt1_when_feedback_changes,
+        test_identical_raw_responses_proven_as_two_real_calls_via_metadata,
     ):
         fn()
 

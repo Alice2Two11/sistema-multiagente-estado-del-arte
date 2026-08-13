@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import hashlib
 import json
 from pathlib import Path
 import re
@@ -670,6 +671,29 @@ class DraftWritingAgent:
                 for generation_attempt in range(
                     1, int(policy.get("max_section_revision_attempts", 2)) + 2
                 ):
+                    # Instrumentación determinista de auditoría de retry
+                    # (sin exponer prompts/respuestas completas -- solo
+                    # SHA256 + metadatos): permite demostrar, con
+                    # evidencia directa en el propio validation.json ya
+                    # persistido, si el prompt cambió realmente entre
+                    # intentos y si previous_errors llegó a construirlo
+                    # -- nunca asume un bug solo porque dos raws
+                    # coincidan; lo confirma o lo descarta con datos.
+                    #
+                    # Alcance epistemológico explícito: esta
+                    # instrumentación prueba que self.runtime.invoke()
+                    # se EJECUTÓ como una llamada Python real dentro de
+                    # este bucle, con un prompt determinado (hash
+                    # verificable) -- NUNCA prueba, ni pretende probar,
+                    # qué hace el runtime/cliente/proveedor por dentro
+                    # (si hay caché HTTP, reuse de conexión, o
+                    # deduplicación en una capa inferior). El runtime es
+                    # una interfaz inyectada (DraftWritingRuntime.invoke
+                    # delega en invoke_fn, provisto externamente) --
+                    # deliberadamente desacoplada de cualquier proveedor
+                    # concreto; esta auditoría no asume ni depende de la
+                    # implementación de ningún proveedor específico.
+                    previous_errors_codes_for_this_attempt = list(previous_errors)
                     prompt = build_section_prompt(
                         section,
                         evidence,
@@ -677,8 +701,41 @@ class DraftWritingAgent:
                         previous_errors,
                         policy,
                     )
+                    prompt_sha256 = hashlib.sha256(
+                        prompt.encode("utf-8")
+                    ).hexdigest()
+                    runtime_invoke_sequence_before = llm_calls
                     raw = self.runtime.invoke(prompt)
                     llm_calls += 1
+                    # Mismo texto exacto que write_raw_section_output
+                    # persiste en el .txt real (str(raw) completo, no
+                    # solo .content) -- así este hash es directamente
+                    # comparable con un `sha256sum` externo sobre el
+                    # archivo .txt ya persistido.
+                    raw_response_sha256 = hashlib.sha256(
+                        str(raw).encode("utf-8")
+                    ).hexdigest()
+                    # Metadata OPCIONAL y genérica: solo se registra si
+                    # el objeto devuelto por el runtime YA la expone por
+                    # sí mismo (ej. un identificador de respuesta o un
+                    # indicador de cache/reuse que el propio runtime/
+                    # cliente decidió incluir) -- nunca se infiere, nunca
+                    # se asume presente, y no depende de la forma
+                    # concreta de ningún proveedor (se leen únicamente
+                    # atributos que, de existir, ya son parte de la
+                    # respuesta tal como la entrega el runtime inyectado
+                    # externamente). Un dict vacío significa,
+                    # honestamente, que el runtime no expuso ninguna
+                    # metadata verificable -- no que no exista.
+                    runtime_response_metadata: dict[str, Any] = {}
+                    response_id = getattr(raw, "id", None)
+                    if isinstance(response_id, str) and response_id:
+                        runtime_response_metadata["response_id"] = response_id
+                    provider_metadata = getattr(raw, "response_metadata", None)
+                    if isinstance(provider_metadata, Mapping):
+                        for key in ("cache_hit", "cached", "cache_read"):
+                            if key in provider_metadata:
+                                runtime_response_metadata["provider_" + key] = provider_metadata[key]
                     raw_path = write_raw_section_output(
                         raw_dir, sid, generation_attempt, raw
                     )
@@ -758,6 +815,29 @@ class DraftWritingAgent:
                         "generation_attempt": generation_attempt,
                         "validation_ok": bool(validation.get("validation_ok")),
                         "validation_errors": validation_errors,
+                        # Instrumentación de auditoría de retry -- ver
+                        # comentario junto a la construcción del prompt.
+                        # Permite confirmar CON EVIDENCIA, leyendo
+                        # directamente este archivo persistido, si el
+                        # prompt cambió entre intentos y si previous_
+                        # errors llegó a construirlo. runtime_invoke_
+                        # executed/sequence_number prueban que self.
+                        # runtime.invoke() se ejecutó como una llamada
+                        # real dentro de este bucle -- NO prueban, por sí
+                        # solos, ausencia de caché/reuse en capas
+                        # inferiores del runtime/cliente/proveedor;
+                        # runtime_response_metadata (opcional, ver
+                        # arriba) es lo único que aportaría esa
+                        # evidencia adicional, y solo si el runtime la
+                        # expone.
+                        "retry_audit": {
+                            "previous_errors_codes_used_in_prompt": previous_errors_codes_for_this_attempt,
+                            "prompt_sha256": prompt_sha256,
+                            "raw_response_sha256": raw_response_sha256,
+                            "runtime_invoke_sequence_number": runtime_invoke_sequence_before + 1,
+                            "runtime_invoke_executed": True,
+                            "runtime_response_metadata": runtime_response_metadata,
+                        },
                         "invalid_citations": [
                             item
                             for item in citation_errors
