@@ -264,3 +264,94 @@ def normalize_generated_section(section, allowed_pairs):
     out["draft_text"] = " ".join(kept)
     out["claims"] = rebuilt
     return out
+
+
+# Lista CERRADA de conectores discursivos iniciales comunes en textos
+# académicos en español -- deliberadamente NO exhaustiva (evita falsos
+# positivos por diseño): solo los patrones más frecuentes en la
+# redacción real de Agent06. Ampliable en el futuro si aparecen más
+# casos reales, pero SIEMPRE como lista cerrada explícita -- nunca
+# fuzzy/semantic matching.
+LEADING_DISCOURSE_CONNECTORS = (
+    "Por ejemplo,", "Además,", "Finalmente,", "Asimismo,", "Sin embargo,",
+    "No obstante,", "Por otro lado,", "Por otra parte,", "En consecuencia,",
+    "Por consiguiente,", "Por tanto,", "Por lo tanto,", "En este sentido,",
+    "De este modo,", "De esta manera,", "Similarmente,", "De manera similar,",
+    "Del mismo modo,", "Por su parte,", "En contraste,", "Al mismo tiempo,",
+    "En síntesis,", "Como resultado,", "En primer lugar,", "En segundo lugar,",
+    "Adicionalmente,",
+)
+
+
+def detect_claims_missing_leading_discourse_connector(section):
+    """
+    Detecta, de forma ESTRICTAMENTE determinista (sin fuzzy/semantic
+    matching, sin embeddings, sin similitud), cuando una oración
+    sustantiva de draft_text comienza con un conector discursivo de
+    LEADING_DISCOURSE_CONNECTORS (lista cerrada arriba) y el claim
+    declarado por el LLM para esa misma afirmación es EXACTAMENTE el
+    resto de la oración tras remover ÚNICAMENTE ese conector inicial.
+
+    Esto NUNCA modifica el matcher exacto existente (normalize_claim_
+    text/normalize_generated_section) ni transfiere/hereda ninguna
+    cita, ni repara el claim generado: solo identifica la causa
+    PRECISA por la que el matcher exacto rechazó la oración, para dar
+    feedback específico y accionable al siguiente intento del LLM. La
+    sección sigue siendo rechazada normalmente por el flujo de
+    validación existente -- este detector es puramente informativo/de
+    diagnóstico, nunca corrige ni acepta nada por sí mismo.
+
+    Devuelve una lista de dicts (uno por caso detectado):
+    {"sentence": <oración completa, con cita si la tenía>,
+     "connector": <conector detectado, sin la coma final>,
+     "claim_text": <texto del claim que coincide exactamente sin el
+     conector>}.
+    """
+
+    draft_text = str((section or {}).get("draft_text", "") or "")
+    claims = (section or {}).get("claims") or []
+    claim_texts = {
+        normalize_claim_text(c.get("claim"))
+        for c in claims
+        if isinstance(c, dict)
+    }
+
+    findings = []
+    for sentence in split_sentences_preserving_citations(draft_text):
+        if not is_substantive_sentence(sentence):
+            continue
+
+        sentence_key = normalize_claim_text(sentence)
+        if sentence_key in claim_texts:
+            continue  # ya coincide exactamente -- no es este caso
+
+        for connector in LEADING_DISCOURSE_CONNECTORS:
+            if not sentence_key.startswith(connector):
+                continue
+            remainder = sentence_key[len(connector):].strip()
+            if not remainder:
+                continue
+            # Al remover el conector, la palabra que sigue queda en
+            # minúscula (regla gramatical normal dentro de la misma
+            # oración: "Finalmente, se requiere..."), pero el LLM
+            # naturalmente recapitaliza esa palabra al escribirla como
+            # el inicio de un claim independiente ("Se requiere...").
+            # Se comparan AMBAS formas -- nunca una tercera variante ni
+            # una comparación aproximada: es la única normalización
+            # ortográfica justificada por la razón gramatical exacta de
+            # este patrón, no una heurística de similitud.
+            remainder_recapitalized = remainder[:1].upper() + remainder[1:]
+            if remainder in claim_texts:
+                matched_claim_text = remainder
+            elif remainder_recapitalized in claim_texts:
+                matched_claim_text = remainder_recapitalized
+            else:
+                continue
+            findings.append({
+                "sentence": sentence,
+                "connector": connector.rstrip(","),
+                "claim_text": matched_claim_text,
+            })
+            break  # un conector detectado por oración es suficiente
+
+    return findings

@@ -104,7 +104,16 @@ REGLAS:
 10. {special_rule}
 11. Cada elemento de claims debe tener:
     - claim: copia literal completa de una oración sustantiva sin sus citas,
-      conservando conectores discursivos iniciales;
+      conservando conectores discursivos iniciales (ej. "Por ejemplo,",
+      "Además,", "Finalmente,", "Sin embargo,"). El texto de claim debe
+      poder reconstruirse quitando ÚNICAMENTE las citas inline de la
+      oración -- ninguna otra palabra se agrega, se quita ni se reordena.
+      INCORRECTO: draft_text dice "Finalmente, se requiere un mayor
+      análisis interdisciplinario..." y claim dice "Se requiere un mayor
+      análisis interdisciplinario..." (omite el conector "Finalmente,").
+      CORRECTO: claim dice "Finalmente, se requiere un mayor análisis
+      interdisciplinario..." (conserva el conector completo, tal cual
+      aparece en la oración).
     - supporting_citations: exactamente las citas que aparecen en esa oración.
 12. Nunca pongas citas únicamente en supporting_citations: deben aparecer
     primero en la oración correspondiente dentro de draft_text.

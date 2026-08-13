@@ -56,7 +56,27 @@ LEGACY_RUNTIME_VERSIONS = {
     # cualquier error de cita/claim/estructura sigue desactivando el
     # salvage por completo, y nunca se reemplaza/inventa un valor
     # numérico -- solo se descartan oraciones/claims que lo contienen.
-    "normalization_version": "sentence_claim_exact_match_preserve_unmatched_v1_immediate_numeric_salvage_v2",
+    #
+    # v3 (sufijo "_discourse_connector_feedback_v3"): dos cambios
+    # observables más, ninguno relaja el matcher exacto ni acepta una
+    # sección desalineada:
+    #   1. build_section_prompt (regla 11) ahora incluye un ejemplo
+    #      positivo/negativo explícito del patrón de fallo real más
+    #      común (conector discursivo inicial omitido en claims[].claim)
+    #      -- el prompt en sí cambió, así que el MISMO input upstream
+    #      puede producir una respuesta distinta del LLM.
+    #   2. detect_claims_missing_leading_discourse_connector (nuevo,
+    #      normalization.py) agrega feedback ESPECÍFICO y accionable a
+    #      previous_errors cuando detecta -- de forma estrictamente
+    #      determinista, sin fuzzy/semantic matching -- que un claim
+    #      desalineado difiere de su oración únicamente por el conector
+    #      discursivo inicial. Nunca cambia validation_ok, nunca hereda
+    #      ni inventa una cita, nunca repara el claim generado: la
+    #      sección sigue rechazándose exactamente igual que antes ante
+    #      el mismo input -- pero el feedback más específico en el
+    #      RETRY puede cambiar qué intento termina siendo aceptado en
+    #      una corrida real, por eso participa en el fingerprint.
+    "normalization_version": "sentence_claim_exact_match_preserve_unmatched_v1_immediate_numeric_salvage_v2_discourse_connector_feedback_v3",
 }
 HYBRID_RUNTIME_VERSIONS = {
     "stage_version": "06_AGENTIC_V17_HYBRID_QUANTITATIVE_SOURCE_AWARE",
@@ -64,7 +84,7 @@ HYBRID_RUNTIME_VERSIONS = {
     "quantitative_selection_version": "confirmed_literal_greedy_coverage_v1",
     "budget_version": "source_aware_exact_total_v1",
     "validation_version": "legacy_notebook06_validation_v1",
-    "normalization_version": "sentence_claim_exact_match_preserve_unmatched_v1_immediate_numeric_salvage_v2",
+    "normalization_version": "sentence_claim_exact_match_preserve_unmatched_v1_immediate_numeric_salvage_v2_discourse_connector_feedback_v3",
 }
 REQUIRED_DRAFT_ARTIFACTS = (
     "state_of_art_draft.json",

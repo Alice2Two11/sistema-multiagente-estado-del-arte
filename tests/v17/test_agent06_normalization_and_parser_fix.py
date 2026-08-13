@@ -48,7 +48,10 @@ from test_agent06_v16 import Env  # noqa: E402
 
 from src.adapters.draft_writing_runtime import DraftWritingRuntime  # noqa: E402
 from src.agents.draft_writing_agent import DraftWritingAgent  # noqa: E402
-from src.tools.draft_writing.normalization import normalize_generated_section  # noqa: E402
+from src.tools.draft_writing.normalization import (  # noqa: E402
+    detect_claims_missing_leading_discourse_connector,
+    normalize_generated_section,
+)
 from src.tools.draft_writing.validation import validate_generated_section  # noqa: E402
 
 RESULTS = []
@@ -458,6 +461,166 @@ def test_mixed_errors_never_trigger_salvage_in_any_attempt():
     assert salvage_files == []  # el salvage nunca se activó, en ningún intento
 
 
+@scenario("HH01. 'Finalmente,' omitido en el claim -> el detector lo identifica específicamente (caso real de Exp07/S6 attempt 1)")
+def test_finalmente_connector_detected():
+    section = {
+        "section_id": "S6",
+        "draft_text": "Finalmente, se requiere un mayor análisis interdisciplinario para avanzar en la disciplina.",
+        "claims": [{
+            "claim": "Se requiere un mayor análisis interdisciplinario para avanzar en la disciplina",
+            "supporting_citations": [],
+        }],
+    }
+    findings = detect_claims_missing_leading_discourse_connector(section)
+    assert len(findings) == 1
+    assert findings[0]["connector"] == "Finalmente"
+    assert findings[0]["claim_text"] == "Se requiere un mayor análisis interdisciplinario para avanzar en la disciplina"
+
+
+@scenario("HH02. 'Por ejemplo,' omitido en el claim -> el detector lo identifica específicamente (caso real de Exp07/S6 attempt 2)")
+def test_por_ejemplo_connector_detected():
+    section = {
+        "section_id": "S6",
+        "draft_text": "Por ejemplo, el análisis de capacidad potencial mostró resultados relevantes para la región estudiada.",
+        "claims": [{
+            "claim": "El análisis de capacidad potencial mostró resultados relevantes para la región estudiada",
+            "supporting_citations": [],
+        }],
+    }
+    findings = detect_claims_missing_leading_discourse_connector(section)
+    assert len(findings) == 1
+    assert findings[0]["connector"] == "Por ejemplo"
+
+
+@scenario("HH03. Claim literalmente correcto (incluye el conector) -> el detector no reporta nada, el matcher exacto ya lo acepta normalmente")
+def test_literally_correct_claim_passes():
+    section = {
+        "section_id": "S6",
+        "draft_text": "Finalmente, se requiere un mayor análisis interdisciplinario para avanzar en la disciplina.",
+        "claims": [{
+            "claim": "Finalmente, se requiere un mayor análisis interdisciplinario para avanzar en la disciplina",
+            "supporting_citations": [],
+        }],
+    }
+    findings = detect_claims_missing_leading_discourse_connector(section)
+    assert findings == []
+
+
+@scenario("HH04. Paráfrasis real (no solo el conector) -> el detector NO la reclasifica, sigue como fallo genérico sin reparación")
+def test_real_paraphrase_never_reclassified():
+    section = {
+        "section_id": "S6",
+        "draft_text": "La urbanización y el crecimiento demográfico impulsan la huella ecológica regional de forma sostenida.",
+        "claims": [{
+            "claim": "El crecimiento poblacional incrementa la huella ecológica en la región estudiada",
+            "supporting_citations": [],
+        }],
+    }
+    findings = detect_claims_missing_leading_discourse_connector(section)
+    assert findings == []
+
+
+@scenario("HH05. Claim truncado (le falta contenido real, no solo un conector) -> sigue fallando, el detector no lo reclasifica")
+def test_truncated_claim_never_reclassified():
+    section = {
+        "section_id": "S6",
+        "draft_text": "La medición del impacto tecnológico presenta dificultades metodológicas, a pesar de evidencias de incrementos en patentes relacionadas.",
+        "claims": [{
+            "claim": "La medición del impacto tecnológico presenta dificultades metodológicas",
+            "supporting_citations": [],
+        }],
+    }
+    findings = detect_claims_missing_leading_discourse_connector(section)
+    assert findings == []
+
+
+@scenario("HH06. Claim inexistente (la oración no tiene ningún claim declarado) -> sigue fallando, el detector no inventa ninguna correspondencia")
+def test_missing_claim_entirely_never_reclassified():
+    section = {
+        "section_id": "S6",
+        "draft_text": "Por ejemplo, estudios muestran que en 1975 numerosos países enfrentaron limitaciones agrícolas severas.",
+        "claims": [],
+    }
+    findings = detect_claims_missing_leading_discourse_connector(section)
+    assert findings == []
+
+
+@scenario("HH07. Ninguna cita se hereda ni se inventa por esta detección -- normalize_generated_section sigue produciendo exactamente el mismo resultado, con o sin el detector")
+def test_detector_never_affects_normalization_output():
+    section = {
+        "section_id": "S6",
+        "draft_text": "Finalmente, se requiere un mayor análisis interdisciplinario para avanzar en la disciplina.",
+        "claims": [{
+            "claim": "Se requiere un mayor análisis interdisciplinario para avanzar en la disciplina",
+            "supporting_citations": ["[a.pdf | c1]"],
+        }],
+    }
+    allowed = {("a.pdf", "c1")}
+    result = normalize_generated_section(section, allowed)
+    # La oración se preserva (comportamiento ya validado en rondas
+    # anteriores), pero SIN la cita del claim -- el detector es
+    # puramente diagnóstico, nunca hereda ni inventa nada.
+    assert "[a.pdf | c1]" not in result["draft_text"]
+    assert result["claims"] == []
+    # detect_claims_missing_leading_discourse_connector, llamado aparte,
+    # no altera en absoluto el section dict de entrada.
+    findings = detect_claims_missing_leading_discourse_connector(section)
+    assert len(findings) == 1
+    assert section["claims"][0]["claim"] == "Se requiere un mayor análisis interdisciplinario para avanzar en la disciplina"
+
+
+@scenario("HH08. El feedback específico llega al RETRY -- previous_errors del siguiente intento contiene CLAIM_MISSING_INITIAL_DISCOURSE_CONNECTOR con el conector real")
+def test_retry_receives_specific_discourse_connector_feedback():
+    seen_prompts = []
+
+    def invoke(prompt):
+        seen_prompts.append(prompt)
+        if len(seen_prompts) == 1:
+            return json.dumps({
+                "section_id": "S1", "section_title": "Methods",
+                "draft_text": "Finalmente, se requiere un mayor análisis interdisciplinario para avanzar en la disciplina.",
+                "claims": [{
+                    "claim": "Se requiere un mayor análisis interdisciplinario para avanzar en la disciplina",
+                    "supporting_citations": ["[a.pdf | c1]"],
+                }],
+            })
+        return json.dumps({
+            "section_id": "S1", "section_title": "Methods",
+            "draft_text": "Finalmente, se requiere un mayor análisis interdisciplinario para avanzar en la disciplina.",
+            "claims": [{
+                "claim": "Finalmente, se requiere un mayor análisis interdisciplinario para avanzar en la disciplina",
+                "supporting_citations": ["[a.pdf | c1]"],
+            }],
+        })
+
+    e = Env(attempt=1)
+    e.agent = DraftWritingAgent(DraftWritingRuntime(invoke, e.collection))
+    result = e.agent.execute(e.ai)
+
+    assert len(seen_prompts) == 2  # el segundo intento SÍ ocurrió
+    second_prompt = seen_prompts[1]
+    assert "CLAIM_MISSING_INITIAL_DISCOURSE_CONNECTOR" in second_prompt
+    assert "Finalmente" in second_prompt
+    # El segundo intento (con el claim ya corregido) debe aceptarse.
+    assert result.quality_status.value == "APPROVED"
+
+
+@scenario("HH09. El par alucinado REST_a_00470.pdf|605678...chunk_0003 (caso real de Exp07/S6 attempt 3) sigue siendo rechazado por resolve_allowed_pair -- nada se relajó ahí")
+def test_hallucinated_source_pair_still_rejected():
+    from src.tools.draft_writing.normalization import resolve_allowed_pair
+
+    allowed = {
+        ("papers adicionales/s0921-8009_2899_2900063-4.pdf", "605678ede63a21ed_chunk_0003"),
+        ("papers adicionales/s0921-8009_2899_2900063-4.pdf", "605678ede63a21ed_chunk_0071"),
+    }
+    hallucinated = ("papers adicionales/REST_a_00470.pdf", "605678ede63a21ed_chunk_0003")
+    assert resolve_allowed_pair(hallucinated, allowed) is None
+    # El par legítimo (mismo chunk_id, source_filename correcto) sigue resolviendo normalmente.
+    assert resolve_allowed_pair(
+        ("papers adicionales/s0921-8009_2899_2900063-4.pdf", "605678ede63a21ed_chunk_0003"), allowed,
+    ) is not None
+
+
 if __name__ == "__main__":
     for fn in (
         test_pure_json,
@@ -474,6 +637,15 @@ if __name__ == "__main__":
         test_numeric_only_attempt_triggers_immediate_valid_salvage_and_stops,
         test_numeric_only_attempt_with_invalid_salvage_continues_to_next_attempt,
         test_mixed_errors_never_trigger_salvage_in_any_attempt,
+        test_finalmente_connector_detected,
+        test_por_ejemplo_connector_detected,
+        test_literally_correct_claim_passes,
+        test_real_paraphrase_never_reclassified,
+        test_truncated_claim_never_reclassified,
+        test_missing_claim_entirely_never_reclassified,
+        test_detector_never_affects_normalization_output,
+        test_retry_receives_specific_discourse_connector_feedback,
+        test_hallucinated_source_pair_still_rejected,
     ):
         fn()
 

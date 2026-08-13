@@ -32,6 +32,7 @@ from src.tools.draft_writing.artifacts import (
 from src.tools.draft_writing.hybrid_retrieval import retrieve_section_evidence_hybrid
 from src.tools.draft_writing.input_validation import validate_draft_dependencies
 from src.tools.draft_writing.normalization import (
+    detect_claims_missing_leading_discourse_connector,
     normalize_generated_section,
     split_sentences_preserving_citations,
 )
@@ -71,7 +72,7 @@ LEGACY_VERSIONS = {
     # src/adapters/draft_writing_runtime.py (duplicación preexistente
     # de estas constantes entre ambos archivos -- no introducida por
     # este cambio, pero ambas copias deben mantenerse sincronizadas).
-    "normalization_version": "sentence_claim_exact_match_preserve_unmatched_v1_immediate_numeric_salvage_v2",
+    "normalization_version": "sentence_claim_exact_match_preserve_unmatched_v1_immediate_numeric_salvage_v2_discourse_connector_feedback_v3",
 }
 HYBRID_VERSIONS = {
     "stage_version": "06_AGENTIC_V17_HYBRID_QUANTITATIVE_SOURCE_AWARE",
@@ -79,7 +80,7 @@ HYBRID_VERSIONS = {
     "quantitative_selection_version": "confirmed_literal_greedy_coverage_v1",
     "budget_version": "source_aware_exact_total_v1",
     "validation_version": "legacy_notebook06_validation_v1",
-    "normalization_version": "sentence_claim_exact_match_preserve_unmatched_v1_immediate_numeric_salvage_v2",
+    "normalization_version": "sentence_claim_exact_match_preserve_unmatched_v1_immediate_numeric_salvage_v2_discourse_connector_feedback_v3",
 }
 
 
@@ -712,6 +713,32 @@ class DraftWritingAgent:
                     citation_errors = list(validation.get("citation_errors") or [])
                     claim_errors = list(validation.get("claim_errors") or [])
                     numeric_errors = list(validation.get("numeric_errors") or [])
+
+                    # Detección determinista y puramente diagnóstica
+                    # (nunca repara ni acepta nada por sí misma -- ver
+                    # detect_claims_missing_leading_discourse_connector):
+                    # identifica cuándo la causa PRECISA de un claim/
+                    # oración desalineados es que el LLM omitió
+                    # únicamente el conector discursivo inicial. Se
+                    # ejecuta sobre "parsed" (el JSON crudo del LLM,
+                    # antes de normalización) para ver la oración CON su
+                    # conector y el claim SIN él, tal como el LLM los
+                    # escribió. El resultado se agrega a claim_errors
+                    # como feedback ESPECÍFICO y accionable para el
+                    # siguiente intento -- nunca cambia validation_ok,
+                    # nunca hereda/inventa una cita, nunca modifica el
+                    # matcher exacto ni el claim generado.
+                    for finding in detect_claims_missing_leading_discourse_connector(parsed):
+                        claim_errors.append(
+                            "CLAIM_MISSING_INITIAL_DISCOURSE_CONNECTOR: "
+                            f"el claim declarado omite el conector discursivo inicial "
+                            f"'{finding['connector']},' presente en la oración real del "
+                            f"draft_text ('{finding['sentence'][:100]}'). "
+                            "claims[].claim debe ser copia literal COMPLETA de la "
+                            "oración correspondiente (sin las citas inline), "
+                            "conservando cualquier conector discursivo inicial "
+                            "(ej. 'Por ejemplo,', 'Además,', 'Finalmente,')."
+                        )
 
                     def reason(item: Any) -> str:
                         return (
