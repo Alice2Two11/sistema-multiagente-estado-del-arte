@@ -1,0 +1,226 @@
+{
+  "title": "Estado del arte en detección automática de intrusiones en redes mediante aprendizaje automático y aprendizaje profundo",
+  "topic": "Detección automática de intrusiones en redes mediante técnicas de aprendizaje automático y aprendizaje profundo",
+  "status": "draft_validated_for_verification",
+  "sections": [
+    {
+      "section_id": "S1",
+      "section_title": "Introducción y contexto",
+      "draft_text": "Esta sección presenta el alcance y la organización de la revisión. Su función es orientar la lectura y establecer la transición hacia el análisis de la evidencia científica desarrollado en las secciones siguientes.",
+      "claims": [],
+      "generation_attempt": 0,
+      "section_validation": {
+        "validation_ok": true,
+        "errors": [],
+        "citation_errors": [],
+        "claim_errors": [],
+        "numeric_errors": [],
+        "valid_citation_count": 0,
+        "substantive_sentence_count": 0,
+        "source_free_organizational_section": true
+      },
+      "deterministic_normalization": {
+        "applied": true,
+        "normalization_version": "v3_source_free_organizational_template",
+        "source_free_organizational_section": true,
+        "reason": "No evidence assigned by outline and section type permits an organizational introduction or conclusion."
+      }
+    },
+    {
+      "section_id": "S2",
+      "section_title": "Datasets y métricas de evaluación",
+      "draft_text": "Los datasets clásicos como KDD Cup ’99 y NSL-KDD presentan limitaciones por obsolescencia y distribución de ataques [papersAdicionales/electronics-09-01206-v2.pdf | cfb0d03960bae821_chunk_0044] [papersAdicionales/s13369-019-03970-z.pdf | afab6ebcba59d764_chunk_0038] [papersAdicionales/applsci-12-07986.pdf | 75c26b6a297a75c3_chunk_0011]. El dataset KDD Cup ’99 contiene 39 tipos de ataques, de los cuales 22 están en el conjunto de entrenamiento y 17 en el conjunto de prueba, y se utiliza frecuentemente un subconjunto del 10% para experimentos [papersAdicionales/electronics-09-01206-v2.pdf | cfb0d03960bae821_chunk_0044]. El NSL-KDD, una versión mejorada, mantiene cinco clases de ataques principales: DOS, R2L, U2R, Probe y Normal, pero también presenta un desbalance en la distribución de muestras para entrenamiento y prueba [papersAdicionales/s13369-019-03970-z.pdf | afab6ebcba59d764_chunk_0038]. El CICIDS2017 fue diseñado con un escenario de ataque realista y contiene datos de tráfico desde benigno hasta múltiples tipos de ataques distribuidos en conjuntos de entrenamiento, prueba y validación [papersAdicionales/Network_Intrusion_Detection_Based_on_Deep_Hierarch.pdf | cd81b4377d1e9bb1_chunk_0042] [papersAdicionales/An_Ensemble_of_Prediction_and_Learning_Mechanism_f.pdf | a32a9f042d6cb3d2_chunk_0052]. Métricas como Accuracy, False Positive Rate (FPR), curvas ROC y AUC son comúnmente utilizadas para evaluar el desempeño de los modelos, dado que un alto accuracy puede ocultar un elevado número de falsos positivos que afectan la utilidad práctica del sistema [papersAdicionales/1-s2.0-S1877050918301066-main.pdf | 77a58db3d1b370ac_chunk_0029].",
+      "claims": [
+        {
+          "claim": "Los datasets clásicos como KDD Cup ’99 y NSL-KDD presentan limitaciones por obsolescencia y distribución de ataques",
+          "supporting_citations": [
+            "[papersAdicionales/electronics-09-01206-v2.pdf | cfb0d03960bae821_chunk_0044]",
+            "[papersAdicionales/s13369-019-03970-z.pdf | afab6ebcba59d764_chunk_0038]",
+            "[papersAdicionales/applsci-12-07986.pdf | 75c26b6a297a75c3_chunk_0011]"
+          ],
+          "identity_action": "NEW",
+          "parent_claim_uids": []
+        },
+        {
+          "claim": "El dataset KDD Cup ’99 contiene 39 tipos de ataques, de los cuales 22 están en el conjunto de entrenamiento y 17 en el conjunto de prueba, y se utiliza frecuentemente un subconjunto del 10% para experimentos",
+          "supporting_citations": [
+            "[papersAdicionales/electronics-09-01206-v2.pdf | cfb0d03960bae821_chunk_0044]"
+          ],
+          "identity_action": "NEW",
+          "parent_claim_uids": []
+        },
+        {
+          "claim": "El NSL-KDD, una versión mejorada, mantiene cinco clases de ataques principales: DOS, R2L, U2R, Probe y Normal, pero también presenta un desbalance en la distribución de muestras para entrenamiento y prueba",
+          "supporting_citations": [
+            "[papersAdicionales/s13369-019-03970-z.pdf | afab6ebcba59d764_chunk_0038]"
+          ],
+          "identity_action": "NEW",
+          "parent_claim_uids": []
+        },
+        {
+          "claim": "El CICIDS2017 fue diseñado con un escenario de ataque realista y contiene datos de tráfico desde benigno hasta múltiples tipos de ataques distribuidos en conjuntos de entrenamiento, prueba y validación",
+          "supporting_citations": [
+            "[papersAdicionales/Network_Intrusion_Detection_Based_on_Deep_Hierarch.pdf | cd81b4377d1e9bb1_chunk_0042]",
+            "[papersAdicionales/An_Ensemble_of_Prediction_and_Learning_Mechanism_f.pdf | a32a9f042d6cb3d2_chunk_0052]"
+          ],
+          "identity_action": "NEW",
+          "parent_claim_uids": []
+        },
+        {
+          "claim": "Métricas como Accuracy, False Positive Rate (FPR), curvas ROC y AUC son comúnmente utilizadas para evaluar el desempeño de los modelos, dado que un alto accuracy puede ocultar un elevado número de falsos positivos que afectan la utilidad práctica del sistema",
+          "supporting_citations": [
+            "[papersAdicionales/1-s2.0-S1877050918301066-main.pdf | 77a58db3d1b370ac_chunk_0029]"
+          ],
+          "identity_action": "NEW",
+          "parent_claim_uids": []
+        }
+      ],
+      "generation_attempt": 1,
+      "section_validation": {
+        "validation_ok": true,
+        "errors": [],
+        "citation_errors": [],
+        "claim_errors": [],
+        "numeric_errors": [],
+        "valid_citation_count": 8,
+        "substantive_sentence_count": 5
+      }
+    },
+    {
+      "section_id": "S3",
+      "section_title": "Técnicas clásicas de aprendizaje supervisado para NIDS",
+      "draft_text": "Los clasificadores clásicos como SVM, Naïve Bayes, Decision Tree y Random Forest son ampliamente utilizados para la detección de intrusiones en redes, mostrando diferentes niveles de desempeño según el dataset y la configuración experimental [papersAdicionales/I-SMAC52330.2021.9640895.pdf | f220c56f422ea8b5_chunk_0008] [papersAdicionales/Alqahtani2020_Chapter_CyberIntrusionDetectionUsingMa.pdf | 70b192af86980918_chunk_0036]. Estudios con el dataset UNSW-NB15 reportan que Random Forest alcanza una precisión del 99.99%, superando a Decision Tree con 100% y a SVM con 70.18% en el mismo conjunto de pruebas [papersAdicionales/I-SMAC52330.2021.9640895.pdf | f220c56f422ea8b5_chunk_0008].",
+      "claims": [
+        {
+          "claim": "Los clasificadores clásicos como SVM, Naïve Bayes, Decision Tree y Random Forest son ampliamente utilizados para la detección de intrusiones en redes, mostrando diferentes niveles de desempeño según el dataset y la configuración experimental",
+          "supporting_citations": [
+            "[papersAdicionales/I-SMAC52330.2021.9640895.pdf | f220c56f422ea8b5_chunk_0008]",
+            "[papersAdicionales/Alqahtani2020_Chapter_CyberIntrusionDetectionUsingMa.pdf | 70b192af86980918_chunk_0036]"
+          ],
+          "identity_action": "NEW",
+          "parent_claim_uids": []
+        },
+        {
+          "claim": "Estudios con el dataset UNSW-NB15 reportan que Random Forest alcanza una precisión del 99.99%, superando a Decision Tree con 100% y a SVM con 70.18% en el mismo conjunto de pruebas",
+          "supporting_citations": [
+            "[papersAdicionales/I-SMAC52330.2021.9640895.pdf | f220c56f422ea8b5_chunk_0008]"
+          ],
+          "identity_action": "NEW",
+          "parent_claim_uids": []
+        }
+      ],
+      "generation_attempt": 1,
+      "section_validation": {
+        "validation_ok": true,
+        "errors": [],
+        "citation_errors": [],
+        "claim_errors": [],
+        "numeric_errors": [],
+        "valid_citation_count": 3,
+        "substantive_sentence_count": 2
+      }
+    },
+    {
+      "section_id": "S4",
+      "section_title": "Modelos de aprendizaje profundo aplicados a NIDS",
+      "draft_text": "Las arquitecturas profundas permiten capturar patrones complejos y mejorar la detección multiclase y de anomalías [papersAdicionales/Network_Intrusion_Detection_Based_on_Deep_Hierarch.pdf | cd81b4377d1e9bb1_chunk_0055]. El modelo híbrido que combina stacked denoising autoencoders (S-NDAE) con un clasificador SVM alcanzó una precisión del 99.99%, un recall del 99.85%, un F1-score del 99.55% y una tasa de falsos positivos del 1.92% en el dataset KDD Cup ’99, evidenciando mejoras significativas en la detección general, aunque con limitaciones en clases minoritarias como \"R2L\" y \"U2L\" debido a la escasez de datos para entrenamiento [papersAdicionales/1-s2.0-S0045790622000684-main.pdf | e469967c58bb3799_chunk_0045].",
+      "claims": [
+        {
+          "claim": "Las arquitecturas profundas permiten capturar patrones complejos y mejorar la detección multiclase y de anomalías",
+          "supporting_citations": [
+            "[papersAdicionales/Network_Intrusion_Detection_Based_on_Deep_Hierarch.pdf | cd81b4377d1e9bb1_chunk_0055]"
+          ],
+          "identity_action": "NEW",
+          "parent_claim_uids": []
+        },
+        {
+          "claim": "El modelo híbrido que combina stacked denoising autoencoders (S-NDAE) con un clasificador SVM alcanzó una precisión del 99.99%, un recall del 99.85%, un F1-score del 99.55% y una tasa de falsos positivos del 1.92% en el dataset KDD Cup ’99, evidenciando mejoras significativas en la detección general, aunque con limitaciones en clases minoritarias como \"R2L\" y \"U2L\" debido a la escasez de datos para entrenamiento",
+          "supporting_citations": [
+            "[papersAdicionales/1-s2.0-S0045790622000684-main.pdf | e469967c58bb3799_chunk_0045]"
+          ],
+          "identity_action": "NEW",
+          "parent_claim_uids": []
+        }
+      ],
+      "generation_attempt": 1,
+      "section_validation": {
+        "validation_ok": true,
+        "errors": [],
+        "citation_errors": [],
+        "claim_errors": [],
+        "numeric_errors": [],
+        "valid_citation_count": 2,
+        "substantive_sentence_count": 2
+      }
+    },
+    {
+      "section_id": "S5",
+      "section_title": "Selección y reducción de características para mejorar eficiencia y precisión",
+      "draft_text": "La reducción de dimensionalidad y selección adecuada de características son esenciales para mejorar la eficiencia y precisión de los sistemas de detección de intrusiones (IDS) [papersAdicionales/Hybrid_feature_selection_for_supporting_lightweigh.pdf | 3f4f76b1d7d7da6b_chunk_0007]. Los métodos filter evalúan la relevancia de las características mediante medidas independientes como distancia o correlación, siendo más ligeros computacionalmente, pero pueden seleccionar características redundantes o subóptimas por falta de interacción con el clasificador [papersAdicionales/Hybrid_feature_selection_for_supporting_lightweigh.pdf | 3f4f76b1d7d7da6b_chunk_0007]. Los métodos híbridos que combinan filtros estadísticos y clasificadores wrapper han demostrado mejorar la precisión y eficiencia en IDS ligeros, como se evidencia en el uso de Random Forest para selección óptima junto con un filtro chi-cuadrado para preselección en el dataset NSL-KDD [papersAdicionales/Hybrid_feature_selection_for_supporting_lightweigh.pdf | 3f4f76b1d7d7da6b_chunk_0007]. La selección de un conjunto reducido de características mantiene o mejora la detección, además de reducir costos computacionales y la tasa de falsos positivos, como se observa en clasificadores Bayesian Network con 10 características importantes [papersAdicionales/IET Information Security - 2015 - Wang - Constructing important features from massive network traffic for lightweight.pdf | 4d5ed33040052e33_chunk_0023] [papersAdicionales/IET Information Security - 2015 - Wang - Constructing important features from massive network traffic for lightweight.pdf | 4d5ed33040052e33_chunk_0032]. Técnicas de reducción dimensional como PCA combinadas con Random Forest también mejoran la precisión y reducen la tasa de error en detección, contribuyendo a minimizar la tasa de falsas alarmas [papersAdicionales/ICESC48915.2020.9155656.pdf | 7501fc77ee1fe6b4_chunk_0007].",
+      "claims": [
+        {
+          "claim": "La reducción de dimensionalidad y selección adecuada de características son esenciales para mejorar la eficiencia y precisión de los sistemas de detección de intrusiones (IDS)",
+          "supporting_citations": [
+            "[papersAdicionales/Hybrid_feature_selection_for_supporting_lightweigh.pdf | 3f4f76b1d7d7da6b_chunk_0007]"
+          ],
+          "identity_action": "NEW",
+          "parent_claim_uids": []
+        },
+        {
+          "claim": "Los métodos filter evalúan la relevancia de las características mediante medidas independientes como distancia o correlación, siendo más ligeros computacionalmente, pero pueden seleccionar características redundantes o subóptimas por falta de interacción con el clasificador",
+          "supporting_citations": [
+            "[papersAdicionales/Hybrid_feature_selection_for_supporting_lightweigh.pdf | 3f4f76b1d7d7da6b_chunk_0007]"
+          ],
+          "identity_action": "NEW",
+          "parent_claim_uids": []
+        },
+        {
+          "claim": "Los métodos híbridos que combinan filtros estadísticos y clasificadores wrapper han demostrado mejorar la precisión y eficiencia en IDS ligeros, como se evidencia en el uso de Random Forest para selección óptima junto con un filtro chi-cuadrado para preselección en el dataset NSL-KDD",
+          "supporting_citations": [
+            "[papersAdicionales/Hybrid_feature_selection_for_supporting_lightweigh.pdf | 3f4f76b1d7d7da6b_chunk_0007]"
+          ],
+          "identity_action": "NEW",
+          "parent_claim_uids": []
+        },
+        {
+          "claim": "La selección de un conjunto reducido de características mantiene o mejora la detección, además de reducir costos computacionales y la tasa de falsos positivos, como se observa en clasificadores Bayesian Network con 10 características importantes",
+          "supporting_citations": [
+            "[papersAdicionales/IET Information Security - 2015 - Wang - Constructing important features from massive network traffic for lightweight.pdf | 4d5ed33040052e33_chunk_0023]",
+            "[papersAdicionales/IET Information Security - 2015 - Wang - Constructing important features from massive network traffic for lightweight.pdf | 4d5ed33040052e33_chunk_0032]"
+          ],
+          "identity_action": "NEW",
+          "parent_claim_uids": []
+        },
+        {
+          "claim": "Técnicas de reducción dimensional como PCA combinadas con Random Forest también mejoran la precisión y reducen la tasa de error en detección, contribuyendo a minimizar la tasa de falsas alarmas",
+          "supporting_citations": [
+            "[papersAdicionales/ICESC48915.2020.9155656.pdf | 7501fc77ee1fe6b4_chunk_0007]"
+          ],
+          "identity_action": "NEW",
+          "parent_claim_uids": []
+        }
+      ],
+      "generation_attempt": 2,
+      "section_validation": {
+        "validation_ok": true,
+        "errors": [],
+        "citation_errors": [],
+        "claim_errors": [],
+        "numeric_errors": [],
+        "valid_citation_count": 6,
+        "substantive_sentence_count": 5
+      }
+    }
+  ],
+  "generation_summary": {
+    "experiment_id": "experimento_paper_05",
+    "section_count": 5,
+    "ground_truth_used": false,
+    "open_search_used": false,
+    "citation_format": "[source_filename | chunk_id]",
+    "retrieval_strategy": "legacy_chroma_then_csv_restricted",
+    "stage_version": "06_AGENTIC_V16_BEHAVIOR_PRESERVING",
+    "rag_version": "legacy_chroma_then_csv_restricted_v1",
+    "validation_version": "legacy_notebook06_validation_v1"
+  }
+}

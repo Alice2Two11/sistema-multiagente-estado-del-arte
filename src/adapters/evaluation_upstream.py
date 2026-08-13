@@ -200,6 +200,37 @@ def build_agent08_input_from_committed_agent07(
         )
         correction_by_claim.setdefault(claim_id, []).append(row)
 
+    # claim_evidence_traceability_rows es el ARTEFACTO REAL de 07 que
+    # contiene los pares claim -> evidencia -> source_filename -> chunk_id
+    # (ClaimEvidenceTraceabilityRow, src/tools/verification/traceability.py)
+    # -- ya acotado por 07 a la evidencia efectivamente considerada durante
+    # la verificación (used_in_original_verification distingue "used" de
+    # "rejected" dentro de ese conjunto, nunca el pool completo elegible;
+    # ver validation.py, "for eid in sorted(used|rejected)"). Unión por
+    # claim_id -- seguro DENTRO de un mismo bundle/ejecución de 07 (ambas
+    # colecciones las produce la MISMA corrida sobre los MISMOS claims;
+    # la inestabilidad de claim_id es un problema de comparar ENTRE
+    # rondas, no dentro de un artefacto). Solo se incluye la evidencia
+    # genuinamente usada como soporte (used_in_original_verification=True)
+    # -- la rechazada no cuenta como "evidencia presente" para el claim.
+    evidence_by_claim: dict[str, list[Mapping[str, Any]]] = {}
+    for row in evidence_rows:
+        if not isinstance(row, Mapping):
+            raise ValueError("AGENT08_AGENT07_EVIDENCE_TRACEABILITY_INVALID")
+        claim_id = _nonempty_text(
+            row.get("claim_id"), "AGENT08_CLAIM_ID_MISSING"
+        )
+        if row.get("used_in_original_verification") is not True:
+            continue
+        source_filename = str(row.get("source_filename") or "").strip()
+        chunk_id = str(row.get("chunk_id") or "").strip()
+        # Fail-closed (requisito 8): un par con source/chunk vacío o
+        # inválido nunca se propaga como si fuera una evidencia real --
+        # se descarta explícitamente, nunca se infiere ni se rellena.
+        if not source_filename or not chunk_id:
+            continue
+        evidence_by_claim.setdefault(claim_id, []).append(row)
+
     compatibility_rows: list[dict[str, Any]] = []
     for row in claim_rows:
         if not isinstance(row, Mapping):
@@ -218,7 +249,7 @@ def build_agent08_input_from_committed_agent07(
             for item in linked
             if str(item.get("comparison_stage_availability") or "").strip()
         })
-        compatibility_rows.append({
+        base_row = {
             "claim_id": claim_id,
             "section_id": str(row.get("section_id") or "").strip(),
             "claim": str(row.get("original_claim_text") or "").strip(),
@@ -236,7 +267,27 @@ def build_agent08_input_from_committed_agent07(
             "correction_needed": False,
             "correction_applied": False,
             "source_stage": SOURCE_STAGE_AGENT07,
-        })
+        }
+        claim_evidence = evidence_by_claim.get(claim_id, ())
+        if claim_evidence:
+            # build_claim_audit_rows agrupa por claim_id y lee source_
+            # filename/chunk_id de CADA fila -- una fila por par de
+            # evidencia, con los campos a nivel de claim repetidos (la
+            # misma forma que ya produce build_claim_audit_rows para
+            # cualquier otro campo multi-fila, ej. "verdict" via
+            # first_non_empty).
+            for evidence_row in sorted(
+                claim_evidence, key=lambda e: (str(e.get("source_filename")), str(e.get("chunk_id")))
+            ):
+                compatibility_rows.append({
+                    **base_row,
+                    "source_filename": str(evidence_row.get("source_filename") or "").strip(),
+                    "chunk_id": str(evidence_row.get("chunk_id") or "").strip(),
+                })
+        else:
+            # Sin evidencia usada real -- nunca se inventa un par; la fila
+            # queda sin source_filename/chunk_id, exactamente como antes.
+            compatibility_rows.append(dict(base_row))
 
     manual_ids = _manual_review_claims(claim_rows)
     declared_manual = int(metrics.get("claims_requiring_manual_review", -1))
