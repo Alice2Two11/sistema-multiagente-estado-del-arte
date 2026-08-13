@@ -22,13 +22,27 @@ from src.contracts.agent_input import (
 from src.contracts.agent_result import AgentResult, QualityStatus
 from src.runtime.draft_writing_protocol import build_draft_fingerprints
 from src.state.fingerprints import fingerprint_mapping, sha256_file
-from src.tools.evaluation.llm_judge import parse_json_safely
+from src.utils.json_parsing import parse_json_safely
 
 
 LEGACY_RUNTIME_VERSIONS = {
     "stage_version": "06_AGENTIC_V16_BEHAVIOR_PRESERVING",
     "rag_version": "legacy_chroma_then_csv_restricted_v1",
     "validation_version": "legacy_notebook06_validation_v1",
+    # Contrato de normalización oración<->claim (normalize_generated_
+    # section, src/tools/draft_writing/normalization.py). Se incrementa
+    # explícitamente cada vez que cambia CÓMO se decide preservar/
+    # heredar/descartar una oración -- nunca se infiere de un hash de
+    # archivo. Antes de esta versión: una oración sustantiva sin
+    # correspondencia EXACTA con un claim se BORRABA por completo,
+    # pudiendo vaciar draft_text entero (EMPTY_DRAFT_TEXT). Desde esta
+    # versión: se preserva sin cita inventada, dejando que la
+    # validación reporte el motivo real. Este cambio de CONTRATO
+    # (no solo de implementación) invalida cualquier draft/manifest de
+    # 06 producido bajo una versión anterior -- por eso participa en el
+    # fingerprint (ver _draft_signature) y en la validación de resume
+    # (ver _manifest_versions_match), sin necesitar --force-rerun.
+    "normalization_version": "sentence_claim_exact_match_preserve_unmatched_v1",
 }
 HYBRID_RUNTIME_VERSIONS = {
     "stage_version": "06_AGENTIC_V17_HYBRID_QUANTITATIVE_SOURCE_AWARE",
@@ -36,6 +50,7 @@ HYBRID_RUNTIME_VERSIONS = {
     "quantitative_selection_version": "confirmed_literal_greedy_coverage_v1",
     "budget_version": "source_aware_exact_total_v1",
     "validation_version": "legacy_notebook06_validation_v1",
+    "normalization_version": "sentence_claim_exact_match_preserve_unmatched_v1",
 }
 REQUIRED_DRAFT_ARTIFACTS = (
     "state_of_art_draft.json",
@@ -545,6 +560,12 @@ def _manifest_versions_match(manifest: Mapping[str, Any], expected_versions: Map
         versions.get("stage") != expected_versions["stage_version"]
         or versions.get("rag") != expected_versions["rag_version"]
         or versions.get("validation") != expected_versions["validation_version"]
+        # Un manifest producido ANTES de este contrato no tiene la clave
+        # "normalization" en absoluto (versions.get(...) da None) --
+        # nunca coincide con el string real esperado, invalidando
+        # correctamente cualquier resume/reuse sobre un draft generado
+        # con la normalización anterior (que podía vaciar draft_text).
+        or versions.get("normalization") != expected_versions["normalization_version"]
     ):
         return False
     if "quantitative_selection_version" in expected_versions:

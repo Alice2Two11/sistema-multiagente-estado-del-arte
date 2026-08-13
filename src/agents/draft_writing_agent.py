@@ -67,6 +67,11 @@ LEGACY_VERSIONS = {
     "stage_version": "06_AGENTIC_V16_BEHAVIOR_PRESERVING",
     "rag_version": "legacy_chroma_then_csv_restricted_v1",
     "validation_version": "legacy_notebook06_validation_v1",
+    # Debe coincidir siempre con LEGACY_RUNTIME_VERSIONS en
+    # src/adapters/draft_writing_runtime.py (duplicación preexistente
+    # de estas constantes entre ambos archivos -- no introducida por
+    # este cambio, pero ambas copias deben mantenerse sincronizadas).
+    "normalization_version": "sentence_claim_exact_match_preserve_unmatched_v1",
 }
 HYBRID_VERSIONS = {
     "stage_version": "06_AGENTIC_V17_HYBRID_QUANTITATIVE_SOURCE_AWARE",
@@ -74,6 +79,7 @@ HYBRID_VERSIONS = {
     "quantitative_selection_version": "confirmed_literal_greedy_coverage_v1",
     "budget_version": "source_aware_exact_total_v1",
     "validation_version": "legacy_notebook06_validation_v1",
+    "normalization_version": "sentence_claim_exact_match_preserve_unmatched_v1",
 }
 
 
@@ -423,12 +429,23 @@ class DraftWritingAgent:
         # silencio los .txt/_validation.json/_rag_trace.json del intento
         # externo anterior, en el MISMO directorio -- perdiendo toda
         # trazabilidad histórica de por qué falló un intento previo.
-        # raw_section_outputs sigue siendo el artefacto de referencia (un
-        # único ArtifactReference tipo "DIRECTORY", sin cambios en su
-        # nombre ni en cómo se registra) -- solo cambia su estructura
-        # interna, nunca leída directamente por 07/08 ni por ningún otro
-        # consumidor del pipeline (confirmado: ningún módulo fuera de
-        # este archivo y artifacts.py referencia raw_section_outputs).
+        #
+        # CONTRATO EXPLÍCITO del artefacto (no cambia silenciosamente):
+        #   - ArtifactReference["raw_section_outputs"] SIEMPRE apunta al
+        #     directorio PADRE (out / "raw_section_outputs") -- el
+        #     histórico COMPLETO de todos los intentos externos
+        #     preservados (agent_attempt_01/, agent_attempt_02/, ...).
+        #     Nunca a un subdirectorio de un intento en particular.
+        #   - raw_dir (esta variable) es el subdirectorio de ESTE intento
+        #     externo únicamente -- se usa para ESCRIBIR los archivos de
+        #     esta ejecución, nunca se registra como el ArtifactReference
+        #     en sí. Cuando el reporte/manifest necesita señalar dónde
+        #     quedaron los archivos de ESTE intento específico, usa la
+        #     clave "current_raw_attempt_directory" (metadata, no un
+        #     ArtifactReference nuevo).
+        # Nunca leída directamente por 07/08 ni por ningún otro consumidor
+        # del pipeline (confirmado: ningún módulo fuera de este archivo y
+        # artifacts.py referencia raw_section_outputs).
         raw_dir = out / "raw_section_outputs" / f"agent_attempt_{agent_input.attempt_number:02d}"
         raw_dir.mkdir(parents=True, exist_ok=True)
 
@@ -470,8 +487,15 @@ class DraftWritingAgent:
                     for name in NAMES
                     if (out / name).exists()
                 }
+                # Contrato explícito: raw_section_outputs SIEMPRE apunta
+                # al directorio PADRE (out / "raw_section_outputs"), que
+                # representa el histórico COMPLETO de todos los intentos
+                # externos preservados (agent_attempt_01/, agent_attempt_
+                # 02/, ...) -- nunca a un subdirectorio de un intento en
+                # particular. Ver docstring de execute() para el
+                # contrato completo.
                 artifacts["raw_section_outputs"] = ArtifactReference(
-                    str(raw_dir), "DIRECTORY"
+                    str(out / "raw_section_outputs"), "DIRECTORY"
                 )
                 return AgentResult(
                     execution_status=ExecutionStatus.COMPLETED,
@@ -845,7 +869,12 @@ class DraftWritingAgent:
                         + list(last_validation.get("claim_errors") or [])
                         + list(last_validation.get("numeric_errors") or []),
                         "generation_attempts": attempt_logs,
-                        "raw_section_outputs_directory": str(raw_dir),
+                        # Contrato explícito (ver docstring de execute()):
+                        # current_raw_attempt_directory es el subdirectorio
+                        # de ESTE intento externo únicamente -- distinto
+                        # del ArtifactReference "raw_section_outputs" (el
+                        # directorio padre, histórico completo).
+                        "current_raw_attempt_directory": str(raw_dir),
                         "published_draft": False,
                     }
                     report_path = write_partial_validation(out, partial_validation)
@@ -854,7 +883,7 @@ class DraftWritingAgent:
                             str(report_path), sha256_file(report_path)
                         ),
                         "raw_section_outputs": ArtifactReference(
-                            str(raw_dir), "DIRECTORY"
+                            str(out / "raw_section_outputs"), "DIRECTORY"
                         ),
                     }
                     action = (
@@ -929,6 +958,7 @@ class DraftWritingAgent:
                     "experiment_id": agent_input.experiment_id,
                     "validation_version": policy.get("validation_version"),
                     "generation_attempts": attempt_logs,
+                    "current_raw_attempt_directory": str(raw_dir),
                 }
             )
             validation_calls += 1
@@ -939,7 +969,7 @@ class DraftWritingAgent:
                         str(path), sha256_file(path)
                     ),
                     "raw_section_outputs": ArtifactReference(
-                        str(raw_dir), "DIRECTORY"
+                        str(out / "raw_section_outputs"), "DIRECTORY"
                     ),
                 }
                 action = (
@@ -1009,6 +1039,7 @@ class DraftWritingAgent:
                 "prompt": policy.get("prompt_version"),
                 "rag": versions["rag_version"],
                 "validation": versions["validation_version"],
+                "normalization": versions["normalization_version"],
             }
             if strategy == HYBRID_RETRIEVAL_STRATEGY:
                 manifest_versions.update(
@@ -1038,6 +1069,11 @@ class DraftWritingAgent:
                     "retrieval_rounds": retrieval_rounds,
                 },
                 "versions": manifest_versions,
+                # Mismo contrato que en los caminos de fallo (ver
+                # docstring de raw_dir más arriba): el subdirectorio de
+                # ESTE intento externo, dentro del histórico completo que
+                # representa el ArtifactReference "raw_section_outputs".
+                "current_raw_attempt_directory": str(raw_dir),
             }
             artifacts = write_draft_artifacts(
                 out,

@@ -62,6 +62,7 @@ class TestAgent06V17ResumeMatrix(unittest.TestCase):
                 "stage": versions["stage_version"],
                 "rag": versions["rag_version"],
                 "validation": versions["validation_version"],
+                "normalization": versions["normalization_version"],
             },
         }
         if strategy == "hybrid_chroma_csv_rrf_balanced":

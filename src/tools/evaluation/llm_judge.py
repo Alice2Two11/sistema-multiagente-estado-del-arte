@@ -19,6 +19,7 @@ from typing import Any, Callable
 from langchain_core.messages import HumanMessage
 
 from src.tools.evaluation.text_normalization import safe_str
+from src.utils.json_parsing import parse_json_safely as _parse_json_safely
 
 PROMPT_VERSION = "v5_rubric_reference_comparison_strict_json"
 
@@ -220,34 +221,19 @@ def validate_judge_result(result: Any) -> list[str]:
     return errors
 
 
-def parse_json_safely(text: Any) -> Any:
-    """Extrae JSON aunque la respuesta venga envuelta en un bloque Markdown.
-    Copia literal de notebook 08, celda 1."""
+parse_json_safely = _parse_json_safely
+"""Extrae JSON aunque la respuesta venga envuelta en un bloque Markdown.
 
-    if isinstance(text, (dict, list)):
-        return text
-
-    value = str(text).strip()
-    value = re.sub(r"^\s*```(?:json)?\s*", "", value, flags=re.IGNORECASE)
-    value = re.sub(r"\s*```\s*$", "", value)
-    value = value.strip()
-
-    try:
-        return json.loads(value)
-    except json.JSONDecodeError:
-        pass
-
-    decoder = json.JSONDecoder()
-    for index, character in enumerate(value):
-        if character not in "{[":
-            continue
-        try:
-            parsed, _ = decoder.raw_decode(value[index:])
-            return parsed
-        except json.JSONDecodeError:
-            continue
-
-    raise ValueError("La respuesta del LLM no contiene JSON válido.")
+Reexportada tal cual desde ``src.utils.json_parsing`` (utilidad
+neutral, sin dependencia hacia ningún dominio) -- es la MISMA función,
+no una copia ni un wrapper, para que no exista ninguna duplicación de
+lógica. Ahora también reutilizada por
+``src/adapters/draft_writing_runtime.py`` (Agent06) sin que eso cree
+una dependencia arquitectónica hacia ``src.tools.evaluation``.
+Cualquier código que la importe desde aquí (``from src.tools.
+evaluation.llm_judge import parse_json_safely``) sigue funcionando sin
+cambios -- semántica y comportamiento idénticos, copia literal de
+notebook 08, celda 1."""
 
 
 def run_llm_judge(

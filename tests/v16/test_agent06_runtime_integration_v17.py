@@ -144,6 +144,7 @@ def _approved_result(agent_input, output_dir: Path) -> AgentResult:
                         "stage": versions["stage_version"],
                         "rag": versions["rag_version"],
                         "validation": versions["validation_version"],
+                        "normalization": versions["normalization_version"],
                     },
                 }
             path.write_text(json.dumps(payload), encoding="utf-8")

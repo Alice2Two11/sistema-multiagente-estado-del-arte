@@ -230,6 +230,64 @@ def test_two_external_attempts_preserve_both_raw_artifacts():
     assert list(attempt2_dir.glob("S1_attempt_*.txt"))
 
 
+@scenario("GG08. Contrato raw_section_outputs: el ArtifactReference SIEMPRE apunta al directorio padre (histórico completo), nunca a un subdirectorio de intento")
+def test_raw_section_outputs_artifact_points_to_parent_directory():
+    e = Env(attempt=1)
+    e.agent = DraftWritingAgent(DraftWritingRuntime(
+        lambda p: json.dumps({
+            "section_id": "S1", "section_title": "Methods",
+            "draft_text": "This unsupported scientific statement lacks any valid evidence citation.",
+            "claims": [],
+        }),
+        e.collection,
+    ))
+    result = e.agent.execute(e.ai)
+    ref = result.output_artifacts["raw_section_outputs"]
+    assert Path(ref.path) == e.out / "raw_section_outputs"
+    assert Path(ref.path).name == "raw_section_outputs"
+    # El subdirectorio del intento específico se registra aparte, como
+    # metadata explícita -- nunca sustituye al ArtifactReference padre.
+    report = json.loads((e.out / "draft_validation_report.json").read_text())
+    assert report["current_raw_attempt_directory"] == str(e.out / "raw_section_outputs" / "agent_attempt_01")
+
+
+@scenario("GG09. Fingerprint: normalization_version participa en current_fingerprint -- un cambio de contrato de normalización invalida el fingerprint sin --force-rerun")
+def test_normalization_version_participates_in_fingerprint():
+    from src.adapters.draft_writing_runtime import _draft_signature
+    from src.state.fingerprints import fingerprint_mapping
+
+    base_policy = {
+        "stage_version": "S", "prompt_version": "P", "rag_version": "R", "validation_version": "V",
+        "normalization_version": "sentence_claim_exact_match_preserve_unmatched_v1",
+    }
+    cfg_common = {"experiment_id": "e", "experiment_dir": "d", "model": "m", "embedding_model_name": "em", "chroma_collection_name": "c"}
+    fp_with_version = fingerprint_mapping(_draft_signature({**cfg_common, "policy": base_policy}, {}))
+    older_policy = {k: v for k, v in base_policy.items() if k != "normalization_version"}
+    fp_without_version = fingerprint_mapping(_draft_signature({**cfg_common, "policy": older_policy}, {}))
+    assert fp_with_version != fp_without_version
+
+    # Cambiar el VALOR de normalization_version (una futura corrección
+    # de contrato) también debe cambiar el fingerprint.
+    bumped_policy = {**base_policy, "normalization_version": "otra_version_futura_v2"}
+    fp_bumped = fingerprint_mapping(_draft_signature({**cfg_common, "policy": bumped_policy}, {}))
+    assert fp_bumped != fp_with_version
+
+
+@scenario("GG10. Utilidad JSON: parse_json_safely vive en src.utils.json_parsing (neutral) -- llm_judge.py y draft_writing_runtime.py usan literalmente la MISMA función, sin duplicación")
+def test_parse_json_safely_shared_across_domains_without_duplication():
+    from src.utils.json_parsing import parse_json_safely as from_utils
+    from src.tools.evaluation.llm_judge import parse_json_safely as from_judge
+    import src.adapters.draft_writing_runtime as dwr_module
+    import inspect
+
+    assert from_judge is from_utils  # reexportado, no copiado
+    # draft_writing_runtime.py no debe importar nada de
+    # src.tools.evaluation -- verificado por inspección de su propio
+    # código fuente, no solo de sus imports en tiempo de ejecución.
+    source = inspect.getsource(dwr_module)
+    assert "src.tools.evaluation" not in source
+
+
 if __name__ == "__main__":
     for fn in (
         test_pure_json,
@@ -239,6 +297,9 @@ if __name__ == "__main__":
         test_paraphrased_claim_never_drops_sentence_or_invents_citation,
         test_multiple_unmatched_sentences_never_produce_empty_draft_text,
         test_two_external_attempts_preserve_both_raw_artifacts,
+        test_raw_section_outputs_artifact_points_to_parent_directory,
+        test_normalization_version_participates_in_fingerprint,
+        test_parse_json_safely_shared_across_domains_without_duplication,
     ):
         fn()
 

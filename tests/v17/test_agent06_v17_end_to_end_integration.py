@@ -44,7 +44,7 @@ class _LegacyLengthLLM(EvidenceAwareLLM):
 
 def _normalize_validation_paths(report: dict) -> dict:
     normalized = json.loads(json.dumps(report))
-    normalized.pop("raw_section_outputs_directory", None)
+    normalized.pop("current_raw_attempt_directory", None)
     for attempts in (normalized.get("generation_attempts") or {}).values():
         for attempt in attempts:
             if "attempt_validation_path" in attempt:
