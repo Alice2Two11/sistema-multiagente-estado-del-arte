@@ -28,7 +28,9 @@ funciones puras ya existentes y ya probadas en ``normalization.py``
 
 from __future__ import annotations
 
-from typing import Any, Mapping, Sequence
+import hashlib
+import re
+from typing import Any, Callable, Mapping, Sequence
 
 from .normalization import (
     CITATION_RE,
@@ -37,6 +39,11 @@ from .normalization import (
     is_substantive_sentence,
     resolve_allowed_pair,
     split_sentences_preserving_citations,
+)
+from .claim_identity import (
+    ClaimIdentityDeclaration,
+    default_mint_claim_uid,
+    resolve_claim_identity,
 )
 
 # Vocabulario de errores de esta fase -- códigos EXACTOS pedidos,
@@ -63,6 +70,13 @@ UNEXPECTED_SENTENCE_FIELD = "UNEXPECTED_SENTENCE_FIELD"
 # aquí de forma explícita -- nunca de forma implícita ignorando un
 # campo desconocido.
 ALLOWED_SENTENCE_ITEM_FIELDS = frozenset({"text", "supporting_citations"})
+
+# Fase 2B: sufijo de puntuación final COMPLETO, cualquier combinación
+# de "." "?" "!" al final del texto (".", "?", "!", "?!", "!!", "...",
+# etc.) -- extraído tal cual, nunca normalizado ni recortado a un solo
+# carácter, para preservar exactamente la puntuación original al
+# reinsertar las citas después de ella.
+_TRAILING_PUNCTUATION_RE = re.compile(r"[.?!]+$")
 
 
 def validate_sentence_item_fields(item: Mapping[str, Any], index: int) -> str | None:
@@ -308,6 +322,143 @@ def validate_and_parse_sentences_v2(
     return {"validation_ok": True, "errors": [], "sentences": parsed}
 
 
+def _fingerprint_claim_text(text: str) -> str:
+    """Misma primitiva exacta que ``fingerprint_text`` (``src/tools/
+    verification/corrections.py``, ``sha256(text.encode("utf-8")).
+    hexdigest()``) -- redefinida localmente en vez de importada, porque
+    importar ``corrections.py`` arrastraría todo el módulo de
+    verificación (``validation.py``, masivo) como efecto colateral,
+    violando el aislamiento de importación liviana que V2A10 ya
+    garantiza. No hay ningún algoritmo de negocio que duplicar aquí --
+    es una llamada directa a una primitiva estándar de ``hashlib``,
+    idéntica en ambos lugares."""
+
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def _materialize_sentence_fragment(text: str, citations: Sequence[str]) -> str:
+    """Inserta las citas ya resueltas al final de la oración, con
+    EXACTAMENTE el mismo formato de espaciado que usa hoy el camino
+    legacy (``normalize_generated_section``, ``normalization.py``, sin
+    modificar): el texto base, seguido de las citas separadas por
+    espacio, seguido del sufijo de puntuación final ORIGINAL COMPLETO
+    -- nunca solo un caracter.
+
+    A diferencia del camino legacy (que solo reconoce un signo de
+    cierre simple), esta funcion extrae el sufijo de puntuacion final
+    COMPLETO (cualquier combinacion de ".", "?", "!" al final del
+    texto, ej. "?!", "!!", "...") y lo reinserta tal cual, despues de
+    las citas -- nunca lo normaliza ni lo recorta a un solo caracter.
+    Nunca reformula ni reordena el texto -- copia literal mas citas al
+    final, determinista."""
+
+    stripped = text.rstrip()
+    match = _TRAILING_PUNCTUATION_RE.search(stripped)
+    if match:
+        punct = match.group(0)
+        base = stripped[: match.start()].strip()
+    else:
+        punct = ""
+        base = stripped.strip()
+    if citations:
+        return f"{base} {' '.join(citations)}{punct}"
+    return f"{base}{punct}"
+
+
+def materialize_initial_section_v2(
+    sentences: Sequence[Mapping[str, Any]],
+    section_id: str,
+    *,
+    round_number: int = 1,
+    mint_uid: Callable[[], str] = default_mint_claim_uid,
+    text_fingerprint: Callable[[str], str] = _fingerprint_claim_text,
+) -> dict[str, Any]:
+    """Fase 2B -- materialización determinista GENERACIÓN INICIAL
+    únicamente: ``sentences[]`` (ya validado por ``validate_and_parse_
+    sentences_v2``, ``validation_ok=True``) -> ``draft_text`` +
+    ``claims[]``, en el shape externo exacto que hoy consumen 06/07/08.
+
+    Principio central: el texto del claim NUNCA se vuelve a escribir --
+    es una copia directa de ``sentence["text"]``. No hay LLM, no hay
+    fuzzy matching, no hay parafraseo ni corrección de conectores: esta
+    función es pura y determinista.
+
+    Cada oración SUSTANTIVA (``is_substantive_sentence``, función real
+    ya existente, sin cambios) produce exactamente un claim, con:
+      - ``identity_action="NEW"`` y ``parent_claim_uids=()`` --
+        asignados por el SISTEMA, nunca declarados por el LLM (el
+        contrato de fase 2A ya rechaza que el LLM los envíe);
+      - identidad real resuelta vía ``resolve_claim_identity``
+        (``claim_identity.py``, sin modificar) -- mismo camino
+        productivo que usaría cualquier otro NEW del sistema;
+      - ``claim_id = f"{section_id}_C{n}"`` con ``n`` empezando en 1,
+        exactamente la convención vigente confirmada en producción
+        (``validation.py``, ``enumerate(claims, start=1)``).
+
+    Las oraciones NO sustantivas permanecen en ``draft_text`` -- nunca
+    se eliminan -- pero no generan ningún claim ni reciben identidad.
+
+    Precisión sobre determinismo (no todo el output es determinista de
+    la misma forma):
+      - ``draft_text`` es determinista -- función pura del ``sentences``
+        de entrada.
+      - Por cada claim, ``claim``/``claim_id``/``supporting_citations``/
+        ``claim_text_fingerprint``/``identity_action``/``parent_claim_
+        uids``/``claim_version``/``created_round``/``updated_round`` son
+        deterministas para el mismo input -- se recalculan igual cada
+        vez.
+      - ``claim_uid`` de un ``NEW`` NO es determinista por diseño: cada
+        llamada mintea una identidad real y única (``default_mint_
+        claim_uid``, UUID4 aleatorio, sin cambios) -- dos
+        materializaciones del mismo texto producen ``claim_uid``
+        distintos, correctamente (nunca deben compartir identidad por
+        casualidad de tener el mismo texto).
+      - Con un ``mint_uid`` determinista INYECTADO (parámetro de esta
+        función), la salida completa -- incluido ``claim_uid`` -- sí es
+        reproducible. Esto no cambia el mecanismo real de
+        ``claim_identity.py`` ni convierte el UID en un hash del texto
+        -- solo permite pruebas deterministas end-to-end.
+
+    Devuelve ``{"draft_text": str, "claims": [...]}``."""
+
+    fragments: list[str] = []
+    claims: list[dict[str, Any]] = []
+    claim_ordinal = 0
+
+    for sentence in sentences:
+        text = str(sentence["text"])
+        citations = list(sentence.get("supporting_citations") or [])
+        fragments.append(_materialize_sentence_fragment(text, citations))
+
+        if not is_substantive_sentence(text):
+            # Permanece en draft_text (ya añadido arriba) -- nunca
+            # genera claim, nunca recibe identidad artificial.
+            continue
+
+        claim_ordinal += 1
+        claim_id = f"{section_id}_C{claim_ordinal}"
+        declaration = ClaimIdentityDeclaration(action="NEW", parent_claim_uids=())
+        identity = resolve_claim_identity(
+            declaration=declaration,
+            claim_text=text,
+            claim_id=claim_id,
+            previous_claims_by_uid={},
+            forced_parent_uid=None,
+            round_number=round_number,
+            text_fingerprint=text_fingerprint,
+            mint_uid=mint_uid,
+        )
+        claims.append({
+            "claim_id": claim_id,
+            "claim": text,  # copia EXACTA -- nunca re-derivada ni reformulada
+            "supporting_citations": citations,
+            "identity_action": declaration.action,
+            **identity.to_dict(),
+        })
+
+    return {"draft_text": " ".join(fragments), "claims": claims}
+
+
 def generate_section_canonical_v2(
     *,
     section: Mapping[str, Any],
@@ -324,16 +475,19 @@ def generate_section_canonical_v2(
     policy declara explícitamente ``draft_representation_contract ==
     "canonical_sentences_v2"``.
 
-    Fase 2A: SIN CAMBIOS respecto a fase 1 -- sigue sin implementar.
-    ``validate_and_parse_sentences_v2`` (arriba) ya existe y está
-    probada, pero deliberadamente NO se conecta aquí todavía: esta
-    fase no materializa draft_text/claims[] ni invoca al runtime --
-    eso queda para una fase posterior, autorizada por separado."""
+    Fase 2A/2B: SIN CAMBIOS respecto a fases anteriores -- sigue sin
+    implementar. ``validate_and_parse_sentences_v2`` (parsing/
+    validación) y ``materialize_initial_section_v2`` (materialización
+    determinista de generación inicial) ya existen y están probadas,
+    pero deliberadamente NO se conectan aquí todavía: esta fase no
+    invoca al runtime ni conecta nada con execute() de Agent06 -- eso
+    queda para una fase posterior, autorizada por separado."""
 
     raise NotImplementedError(
         "canonical_sentences_v2: generación end-to-end pendiente de "
         "autorización de una fase posterior (parsing/validación de "
-        "sentences[] ya implementado y probado en esta fase -- ver "
-        "validate_and_parse_sentences_v2 -- pero aún no conectado a la "
-        "generación real ni a la materialización de draft_text/claims)."
+        "sentences[] -- fase 2A -- y materialización determinista de "
+        "generación inicial -- fase 2B -- ya implementadas y probadas "
+        "por separado, pero aún no conectadas a la invocación real del "
+        "runtime ni a execute() de Agent06)."
     )
