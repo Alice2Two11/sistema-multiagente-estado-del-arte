@@ -6,7 +6,11 @@ from pathlib import Path
 import re
 from typing import Any, Mapping
 
-from src.agents.draft_writing_agent import DraftWritingAgent
+from src.agents.draft_writing_agent import (
+    CANONICAL_SENTENCES_DRAFT_REPRESENTATION_CONTRACT,
+    LEGACY_DRAFT_REPRESENTATION_CONTRACT,
+    DraftWritingAgent,
+)
 from src.config.draft_writing_policy_config import (
     LEGACY_RETRIEVAL_STRATEGY,
     PLANNED_HYBRID_RETRIEVAL_STRATEGY,
@@ -426,7 +430,29 @@ def _dependency_references(cfg) -> dict[str, ArtifactReference]:
 
 def _draft_signature(cfg, dependencies) -> dict[str, Any]:
     policy = {key: value for key, value in cfg["policy"].items() if key != "current_fingerprint"}
-    return {
+    contract = policy.get(
+        "draft_representation_contract",
+        LEGACY_DRAFT_REPRESENTATION_CONTRACT,
+    )
+    if contract not in {
+        LEGACY_DRAFT_REPRESENTATION_CONTRACT,
+        CANONICAL_SENTENCES_DRAFT_REPRESENTATION_CONTRACT,
+    }:
+        # Misma semántica fail-closed que en draft_writing_agent.py: un
+        # valor desconocido nunca puede colapsar silenciosamente al
+        # fingerprint legacy -- se rechaza aquí también, antes de
+        # construir ninguna firma.
+        raise ValueError(f"UNKNOWN_DRAFT_REPRESENTATION_CONTRACT:{contract}")
+    if contract != CANONICAL_SENTENCES_DRAFT_REPRESENTATION_CONTRACT:
+        # Legacy (ausente o "legacy" explícito): la clave NUNCA
+        # participa en el fingerprint histórico -- se remueve
+        # explícitamente de la copia usada para la firma, sin importar
+        # si ya estaba presente en cfg["policy"]. Esto es lo único que
+        # garantiza fingerprint(legacy) == fingerprint(pre-cambio),
+        # byte a byte, incluso si "legacy" llega a aparecer explícito
+        # en una configuración real en el futuro.
+        policy = {key: value for key, value in policy.items() if key != "draft_representation_contract"}
+    signature = {
         "stage": "06_agente_redactor",
         "stage_version": policy["stage_version"],
         "experiment_id": cfg["experiment_id"],
@@ -445,6 +471,11 @@ def _draft_signature(cfg, dependencies) -> dict[str, Any]:
         "rag_version": policy["rag_version"],
         "validation_version": policy["validation_version"],
     }
+    if contract == CANONICAL_SENTENCES_DRAFT_REPRESENTATION_CONTRACT:
+        # ÚNICAMENTE V2 incorpora esta clave al fingerprint -- nunca
+        # legacy, ni por ausencia ni por valor explícito (ver arriba).
+        signature["draft_representation_contract"] = CANONICAL_SENTENCES_DRAFT_REPRESENTATION_CONTRACT
+    return signature
 
 
 def build_draft_agent_input(cfg):

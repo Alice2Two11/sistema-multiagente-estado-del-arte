@@ -65,16 +65,6 @@ from src.tools.draft_writing.validation import (
 LEGACY_RETRIEVAL_STRATEGY = "legacy_chroma_then_csv_restricted"
 HYBRID_RETRIEVAL_STRATEGY = "hybrid_chroma_csv_rrf_balanced"
 
-# Fase 1 de aislamiento del contrato canónico sentences[] (V2) --
-# únicamente la bifurcación mínima: la ausencia del flag y el valor
-# "legacy" explícito son EQUIVALENTES y producen exactamente el
-# comportamiento histórico (el código legacy de abajo no se mueve, no
-# se extrae, no se reindenta). El camino V2 (canonical_sentences.py)
-# solo se invoca cuando la policy lo selecciona explícitamente -- ver
-# tests LEGACY01-08.
-LEGACY_DRAFT_REPRESENTATION_CONTRACT = "legacy"
-CANONICAL_SENTENCES_DRAFT_REPRESENTATION_CONTRACT = "canonical_sentences_v2"
-
 LEGACY_VERSIONS = {
     "stage_version": "06_AGENTIC_V16_BEHAVIOR_PRESERVING",
     "rag_version": "legacy_chroma_then_csv_restricted_v1",
@@ -626,25 +616,6 @@ class DraftWritingAgent:
                 sections, policy, strategy
             )
 
-            # Validación fail-closed del contrato de representación de
-            # secciones: una sola vez, ANTES de procesar cualquier
-            # sección -- incluidas las organizativas/source-free, que
-            # antes podían generarse (generated.append(...); continue)
-            # sin haber pasado por esta validación. Un flag desconocido
-            # ahora falla antes de tocar la primera sección, sin
-            # importar su tipo.
-            contract = policy.get(
-                "draft_representation_contract",
-                LEGACY_DRAFT_REPRESENTATION_CONTRACT,
-            )
-            if contract not in {
-                LEGACY_DRAFT_REPRESENTATION_CONTRACT,
-                CANONICAL_SENTENCES_DRAFT_REPRESENTATION_CONTRACT,
-            }:
-                raise ValueError(
-                    f"UNKNOWN_DRAFT_REPRESENTATION_CONTRACT:{contract}"
-                )
-
             generated: list[dict[str, Any]] = []
             all_evidence: list[dict[str, Any]] = []
             attempt_logs: dict[str, list[dict[str, Any]]] = {}
@@ -688,34 +659,6 @@ class DraftWritingAgent:
                             "validation": generated_section["section_validation"],
                         }
                     ]
-                    generated.append(generated_section)
-                    continue
-
-                # Bifurcación mínima, un solo punto: el contrato ya fue
-                # validado UNA VEZ antes del bucle (ver arriba) --
-                # aquí solo se lee la variable ya calculada, nunca se
-                # revalida por sección. El código legacy de abajo sigue
-                # EXACTAMENTE igual, sin ninguna línea movida. Solo
-                # cuando la policy selecciona V2 explícitamente se
-                # invoca el módulo nuevo (import local: sin efectos
-                # secundarios al cargar draft_writing_agent.py, y sin
-                # ejecutar ninguna línea de canonical_sentences.py
-                # durante una corrida legacy).
-                if contract == CANONICAL_SENTENCES_DRAFT_REPRESENTATION_CONTRACT:
-                    from src.tools.draft_writing.canonical_sentences import (
-                        generate_section_canonical_v2,
-                    )
-
-                    generated_section = generate_section_canonical_v2(
-                        section=section,
-                        evidence=evidence,
-                        quant_context=quant_context,
-                        previous_errors=[],
-                        policy=policy,
-                        runtime=self.runtime,
-                        raw_dir=raw_dir,
-                        sid=sid,
-                    )
                     generated.append(generated_section)
                     continue
 
