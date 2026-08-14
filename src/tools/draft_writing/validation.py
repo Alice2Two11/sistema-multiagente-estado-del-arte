@@ -9,6 +9,31 @@ def count_words(text):
     return len(re.findall(r"\b[\wáéíóúüñ]+\b", safe_str(text), flags=re.IGNORECASE))
 
 
+def count_content_words(text):
+    """Cuenta palabras del CONTENIDO LINGÜÍSTICO real, excluyendo citas
+    estructuradas reconocidas por CITATION_RE (``[source_filename |
+    chunk_id]``) -- las citas permanecen intactas en ``draft_text`` en
+    todo momento; esta función NUNCA lo modifica, solo calcula un
+    conteo aparte que excluye los tokens internos de la cita (nombre de
+    archivo, extensión, chunk_id) de la extensión narrativa del estado
+    del arte.
+
+    No elimina nada más: cualquier texto entre corchetes que NO haga
+    match exacto con CITATION_RE (ej. una referencia bibliográfica
+    real como "[1]" o una aclaración entre corchetes) permanece intacto
+    y se sigue contando -- solo el patrón exacto de cita estructurada
+    se excluye. Números científicos normales (porcentajes, decimales,
+    años) nunca están dentro de una cita real, así que nunca se ven
+    afectados.
+
+    Reutiliza count_words tal cual (sin duplicar su regex) sobre el
+    texto ya despojado de citas -- misma semántica de conteo de
+    palabras en ambos casos, la única diferencia es qué texto de
+    entrada reciben."""
+
+    return count_words(CITATION_RE.sub("", safe_str(text)))
+
+
 def number_exists_in_text(value, text):
     token = safe_str(value).replace(",", ".")
     return token in safe_str(text).replace(",", ".")
@@ -135,7 +160,7 @@ def build_draft_reports(sections, outline_sections, evidence_map, policy):
             for numeric_value in re.findall(r"(?<!\w)[+-]?\d+(?:[.,]\d+)?%?", claim_text):
                 found = [pair for pair in parsed if number_exists_in_text(numeric_value, lookup.get(pair, ""))]
                 numeric_rows.append({"section_id": sid, "claim_id": claim_id, "claim_text": claim_text, "numeric_value": numeric_value, "found_in_cited_chunks": bool(found), "matching_citations": "; ".join(f"[{a} | {b}]" for a, b in found), "risk": "none" if found else "high"})
-        word_count = count_words(text)
+        word_count = count_content_words(text)
         budget = budgets[sid]
         source_free = bool((section.get("section_validation") or {}).get("source_free_organizational_section", False))
         quality_rows.append({"section_id": sid, "section_title": title, "word_count": word_count, "source_free_organizational_section": source_free, "citation_count": len(citation_pairs), "valid_citation_count": len(valid_pairs), "invalid_citation_count": len(invalid_pairs), "claim_count": len(claims), "substantive_sentence_count": len(substantive), "uncited_substantive_sentence_count": len(uncited), "section_validation_ok": bool(validation.get("validation_ok"))})
