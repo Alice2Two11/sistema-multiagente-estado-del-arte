@@ -45,6 +45,7 @@ from .claim_identity import (
     default_mint_claim_uid,
     resolve_claim_identity,
 )
+from .artifacts import write_raw_section_output, write_raw_section_validation
 
 # Vocabulario de errores de esta fase -- códigos EXACTOS pedidos,
 # usados como prefijo de cada entrada de "errors" (algunas llevan un
@@ -459,6 +460,29 @@ def materialize_initial_section_v2(
     return {"draft_text": " ".join(fragments), "claims": claims}
 
 
+class CanonicalSectionValidationFailedV2(ValueError):
+    """Reservada para usos futuros/depuración directa de esta función
+    fuera del flujo de Agent06 -- generate_section_canonical_v2() YA
+    NO la lanza para el caso de agotamiento de intentos (ver Fase 3,
+    corrección posterior a la entrega inicial): un output inválido del
+    LLM tras sus reintentos es un fallo de validación científica/
+    estructural CONTROLADO, no una excepción inesperada del agente --
+    debe traducirse en el MISMO contrato externo que Agent06 ya usa
+    para el camino legacy (COMPLETED + NEEDS_REVISION + RETRY/HALT_
+    STAGE), nunca en execution_status=FAILED vía excepción no
+    manejada. generate_section_canonical_v2() ahora devuelve esa
+    condición como parte de su resultado normal (clave
+    "_v2_execution"."failed"), para que draft_writing_agent.py pueda
+    construir ese contrato sin necesitar capturar una excepción."""
+
+    def __init__(self, section_id: str, errors: list[str]):
+        self.section_id = section_id
+        self.errors = list(errors)
+        super().__init__(
+            f"CANONICAL_V2_SECTION_VALIDATION_FAILED:{section_id}:{errors}"
+        )
+
+
 def generate_section_canonical_v2(
     *,
     section: Mapping[str, Any],
@@ -470,24 +494,177 @@ def generate_section_canonical_v2(
     runtime: Any = None,
     raw_dir: Any = None,
     sid: str = "",
-) -> Mapping[str, Any]:
+    runtime_invoke_sequence_base: int = 0,
+) -> dict[str, Any]:
     """Punto de entrada único del camino V2 -- solo se invoca cuando la
     policy declara explícitamente ``draft_representation_contract ==
     "canonical_sentences_v2"``.
 
-    Fase 2A/2B: SIN CAMBIOS respecto a fases anteriores -- sigue sin
-    implementar. ``validate_and_parse_sentences_v2`` (parsing/
-    validación) y ``materialize_initial_section_v2`` (materialización
-    determinista de generación inicial) ya existen y están probadas,
-    pero deliberadamente NO se conectan aquí todavía: esta fase no
-    invoca al runtime ni conecta nada con execute() de Agent06 -- eso
-    queda para una fase posterior, autorizada por separado."""
+    Fase 3 (corregida): implementación real, generación inicial
+    únicamente. Flujo, por intento (hasta agotar ``max_section_
+    revision_attempts`` de la policy -- MISMO cálculo que legacy,
+    ``range(1, N+2)``):
 
-    raise NotImplementedError(
-        "canonical_sentences_v2: generación end-to-end pendiente de "
-        "autorización de una fase posterior (parsing/validación de "
-        "sentences[] -- fase 2A -- y materialización determinista de "
-        "generación inicial -- fase 2B -- ya implementadas y probadas "
-        "por separado, pero aún no conectadas a la invocación real del "
-        "runtime ni a execute() de Agent06)."
-    )
+        prompt V2 (build_section_prompt_v2, NUNCA el prompt legacy)
+          -> runtime.invoke()
+          -> runtime.parse() (parser JSON robusto YA existente --
+             DraftWritingRuntime.parse, nunca se reimplementa aquí)
+          -> validate_and_parse_sentences_v2(expected_section_id=sid)
+          -> si validation_ok: materialize_initial_section_v2()
+          -> si no: los códigos de error entran a previous_errors del
+             SIGUIENTE intento; nunca se repara, nunca se filtra,
+             nunca se convierte al formato legacy.
+
+    Contadores globales de Agent06 (corrección de integración):
+    ``runtime_invoke_sequence_base`` es el número de invocaciones YA
+    realizadas por Agent06 antes de esta sección (su propio ``llm_
+    calls`` acumulado) -- se pasa EXPLÍCITAMENTE desde fuera, nunca se
+    esconde en una clave de policy. Cada ``runtime_invoke_sequence_
+    number`` persistido es ``runtime_invoke_sequence_base +
+    <invocaciones hechas por ESTA sección hasta ese punto>`` -- global
+    y estrictamente creciente entre secciones, nunca reiniciado por
+    sección.
+
+    El resultado SIEMPRE incluye una clave ``"_v2_execution"`` con
+    ``{"llm_calls": N, "validation_calls": N, "attempt_logs": [...],
+    "failed": bool, "last_errors": [...]}`` -- metadata de ejecución
+    que Agent06 debe consumir para actualizar sus propios contadores
+    globales (``llm_calls``, ``validation_calls``, ``attempt_logs[sid]``)
+    y luego ELIMINAR antes de publicar la sección en el shape
+    científico final (no forma parte del contrato externo que
+    consumen 07/08).
+
+    Agotamiento de intentos: esta función NUNCA lanza una excepción
+    para este caso -- devuelve un resultado con
+    ``"_v2_execution"["failed"] = True`` y ``draft_text=""``/
+    ``claims=[]``, para que el llamador (draft_writing_agent.py)
+    construya el MISMO contrato externo que ya usa legacy (COMPLETED +
+    NEEDS_REVISION + RETRY/HALT_STAGE según ``attempt_number``) --
+    nunca ``execution_status=FAILED``, nunca fallback a legacy.
+
+    Instrumentación R5 (idéntica semántica que el camino legacy,
+    persistida en cada intento vía write_raw_section_output/write_raw_
+    section_validation, funciones YA existentes, sin duplicar lógica):
+    prompt_sha256, raw_response_sha256, runtime_invoke_sequence_number,
+    runtime_invoke_executed, runtime_response_metadata,
+    previous_errors_codes_used_in_prompt.
+
+    NUNCA usa el normalizador legacy, NUNCA el detector de conectores
+    legacy, NUNCA fuzzy matching -- no aplica: en V2 no existen claims
+    escritos por el LLM que puedan desalinearse de su oración.
+
+    Numeric salvage: NO conectado en esta fase (requisito explícito).
+    Si una oración V2 es numéricamente problemática, la resolución
+    queda para el validador que corresponda en una fase posterior --
+    aquí simplemente se propaga como un error más de
+    validate_and_parse_sentences_v2 (o, si pasa esa validación pero
+    fallara una verificación numérica downstream, quedaría pendiente
+    de esa fase -- no se mezcla la lógica de salvage legacy aquí)."""
+
+    from .prompting import build_section_prompt_v2
+
+    section_title = str(section.get("section_title") or "")
+    allowed_pairs = {(row["source_filename"], row["chunk_id"]) for row in evidence}
+    max_attempts = int(policy.get("max_section_revision_attempts", 2)) + 1
+    current_errors = list(previous_errors)
+    llm_calls_made = 0
+    validation_calls_made = 0
+    attempt_logs_v2: list[dict[str, Any]] = []
+
+    for attempt in range(1, max_attempts + 1):
+        prompt = build_section_prompt_v2(section, evidence, quant_context, current_errors, policy)
+        prompt_sha256 = hashlib.sha256(prompt.encode("utf-8")).hexdigest()
+        previous_errors_codes_for_this_attempt = list(current_errors)
+
+        raw = runtime.invoke(prompt)
+        llm_calls_made += 1
+        sequence_number = runtime_invoke_sequence_base + llm_calls_made
+        raw_response_sha256 = hashlib.sha256(str(raw).encode("utf-8")).hexdigest()
+
+        runtime_response_metadata: dict[str, Any] = {}
+        response_id = getattr(raw, "id", None)
+        if isinstance(response_id, str) and response_id:
+            runtime_response_metadata["response_id"] = response_id
+        provider_metadata = getattr(raw, "response_metadata", None)
+        if isinstance(provider_metadata, Mapping):
+            for key in ("cache_hit", "cached", "cache_read"):
+                if key in provider_metadata:
+                    runtime_response_metadata["provider_" + key] = provider_metadata[key]
+
+        if raw_dir is not None:
+            write_raw_section_output(raw_dir, sid, attempt, raw)
+
+        try:
+            payload = runtime.parse(raw)
+        except Exception as exc:
+            parse_result = {"validation_ok": False, "errors": [f"INVALID_LLM_OUTPUT:{exc}"], "sentences": None}
+        else:
+            parse_result = validate_and_parse_sentences_v2(
+                payload, allowed_pairs, expected_section_id=sid,
+            )
+        validation_calls_made += 1
+
+        validation_payload = {
+            "section_id": sid,
+            "generation_attempt": attempt,
+            "contract": "canonical_sentences_v2",
+            "validation_ok": parse_result["validation_ok"],
+            "validation_errors": parse_result["errors"],
+            "retry_audit": {
+                "previous_errors_codes_used_in_prompt": previous_errors_codes_for_this_attempt,
+                "prompt_sha256": prompt_sha256,
+                "raw_response_sha256": raw_response_sha256,
+                "runtime_invoke_sequence_number": sequence_number,
+                "runtime_invoke_executed": True,
+                "runtime_response_metadata": runtime_response_metadata,
+            },
+        }
+        if raw_dir is not None:
+            write_raw_section_validation(raw_dir, sid, attempt, validation_payload)
+        attempt_logs_v2.append({
+            "attempt": attempt,
+            "contract": "canonical_sentences_v2",
+            "validation": validation_payload,
+        })
+
+        if parse_result["validation_ok"]:
+            materialized = materialize_initial_section_v2(parse_result["sentences"], sid)
+            return {
+                "section_id": sid,
+                "section_title": section_title,
+                "draft_text": materialized["draft_text"],
+                "claims": materialized["claims"],
+                "section_validation": {"validation_ok": True, "errors": []},
+                "generation_attempt": attempt,
+                "_v2_execution": {
+                    "llm_calls": llm_calls_made,
+                    "validation_calls": validation_calls_made,
+                    "attempt_logs": attempt_logs_v2,
+                    "failed": False,
+                    "last_errors": [],
+                },
+            }
+
+        # Fail-closed: nunca se repara, nunca se filtra, nunca se
+        # convierte al formato legacy. Los códigos reales entran al
+        # siguiente intento tal cual.
+        current_errors = list(parse_result["errors"])
+
+    # Agotados los intentos -- NUNCA se lanza excepción aquí (ver
+    # docstring): se devuelve un resultado de fallo explícito, para
+    # que el llamador construya el contrato NEEDS_REVISION/RETRY/
+    # HALT_STAGE normal de Agent06, nunca un fallback a legacy.
+    return {
+        "section_id": sid,
+        "section_title": section_title,
+        "draft_text": "",
+        "claims": [],
+        "section_validation": {"validation_ok": False, "errors": current_errors},
+        "_v2_execution": {
+            "llm_calls": llm_calls_made,
+            "validation_calls": validation_calls_made,
+            "attempt_logs": attempt_logs_v2,
+            "failed": True,
+            "last_errors": current_errors,
+        },
+    }

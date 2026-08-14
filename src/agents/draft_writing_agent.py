@@ -427,6 +427,123 @@ class DraftWritingAgent:
 
         return candidate, removed_sentences, values
 
+    @staticmethod
+    def _build_v2_section_validation_failed_result(
+        *,
+        agent_input,
+        sid: str,
+        out: Path,
+        raw_dir: Path,
+        attempt_logs: dict[str, list[dict[str, Any]]],
+        retrieval_rounds: int,
+        llm_calls: int,
+        validation_calls: int,
+        last_errors: list[str],
+        validation_version: Any,
+        start: str,
+    ) -> AgentResult:
+        """Función auxiliar NUEVA (extraída, no movida) que replica
+        EXACTAMENTE el mismo contrato externo que el bloque legacy
+        ``if accepted is None:`` (más abajo en este archivo, NUNCA
+        tocado por esta función) ya produce cuando una sección agota
+        sus intentos: ``execution_status=COMPLETED``,
+        ``quality_status=NEEDS_REVISION``, ``RETRY`` en el primer
+        intento externo, ``HALT_STAGE`` en los siguientes -- con
+        artefactos parciales y los códigos de error REALES del último
+        intento preservados.
+
+        Campos comunes con el reporte legacy (``validation_version``,
+        ``section_attempts``, en ambos lugares donde legacy los
+        escribe -- ``draft_validation_report.json`` y ``quality_
+        metrics["technical"]["section_attempts"]``) -- ``validation_
+        version`` se pasa como VALOR explícito, no la policy completa,
+        para no acoplar este helper a la forma de policy que usa el
+        camino legacy.
+
+        Se llama únicamente desde el branch V2 (canonical_sentences_v2
+        agotó sus reintentos). Nunca desde el camino legacy -- ese
+        bloque sigue construyendo su propio AgentResult inline, sin
+        cambios, para no arriesgar el aislamiento ya garantizado
+        (LEGACY 11/11)."""
+
+        section_attempts = len(attempt_logs.get(sid) or [])
+        partial_validation = {
+            "stage": "06_agente_redactor",
+            "experiment_id": agent_input.experiment_id,
+            "validation_version": validation_version,
+            "validation_ok": False,
+            "failed_section": sid,
+            "section_attempts": section_attempts,
+            "contract": "canonical_sentences_v2",
+            "last_attempt_errors": list(last_errors),
+            "generation_attempts": attempt_logs,
+            "current_raw_attempt_directory": str(raw_dir),
+            "published_draft": False,
+        }
+        report_path = write_partial_validation(out, partial_validation)
+        artifacts = {
+            "draft_validation_report.json": ArtifactReference(
+                str(report_path), sha256_file(report_path)
+            ),
+            "raw_section_outputs": ArtifactReference(
+                str(out / "raw_section_outputs"), "DIRECTORY"
+            ),
+        }
+        action = (
+            TransitionAction.RETRY
+            if agent_input.attempt_number == 1
+            else TransitionAction.HALT_STAGE
+        )
+        return AgentResult(
+            execution_status=ExecutionStatus.COMPLETED,
+            quality_status=QualityStatus.NEEDS_REVISION,
+            decision=DecisionInfo(
+                code="SECTION_VALIDATION_FAILED",
+                rationale=(
+                    f"La sección {sid} (canonical_sentences_v2) agotó sus "
+                    "reintentos; se preservaron salidas y validaciones por "
+                    "intento."
+                ),
+            ),
+            quality_metrics={
+                "scientific": {},
+                "technical": {
+                    "validation_ok": False,
+                    "reused": False,
+                    "failed_section": sid,
+                    "section_attempts": section_attempts,
+                    "contract": "canonical_sentences_v2",
+                },
+            },
+            warnings=(
+                AgentWarning(
+                    code="SECTION_VALIDATION_FAILED",
+                    severity=WarningSeverity.ERROR,
+                    blocking=True,
+                    message=(
+                        f"La sección {sid} (canonical_sentences_v2) no "
+                        "superó la validación tras agotar sus intentos."
+                    ),
+                ),
+            ),
+            failure_reason_codes=("SECTION_VALIDATION_FAILED",),
+            requested_transition=RequestedTransition(
+                action=action,
+                target_stage=None,
+                reason_code="NEEDS_REVISION",
+                requires_human_confirmation=False,
+            ),
+            output_artifacts=artifacts,
+            tool_usage=ToolUsage(
+                retrieval_rounds=retrieval_rounds,
+                llm_calls=llm_calls,
+                validation_calls=validation_calls,
+            ),
+            attempt_number=agent_input.attempt_number,
+            started_at=start,
+            completed_at=datetime.now(timezone.utc).isoformat(),
+        )
+
     def _try_immediate_numeric_salvage(
         self,
         *,
@@ -715,7 +832,41 @@ class DraftWritingAgent:
                         runtime=self.runtime,
                         raw_dir=raw_dir,
                         sid=sid,
+                        runtime_invoke_sequence_base=llm_calls,
                     )
+                    # Metadata de ejecución de V2 (nunca inferida de
+                    # archivos, nunca duplicando contadores por
+                    # separado): actualiza los contadores GLOBALES de
+                    # Agent06 con lo que V2 realmente ejecutó, y se
+                    # elimina antes de publicar la sección -- no forma
+                    # parte del contrato externo que consumen 07/08.
+                    v2_execution = generated_section.pop("_v2_execution")
+                    llm_calls += v2_execution["llm_calls"]
+                    validation_calls += v2_execution["validation_calls"]
+                    attempt_logs[sid] = v2_execution["attempt_logs"]
+
+                    if v2_execution["failed"]:
+                        # Agotamiento de intentos V2: NUNCA fallback a
+                        # legacy, NUNCA execution_status=FAILED vía
+                        # excepción -- mismo contrato externo que ya
+                        # usa legacy (COMPLETED + NEEDS_REVISION +
+                        # RETRY/HALT_STAGE según intento externo), vía
+                        # la función auxiliar nueva (nunca toca el
+                        # bloque legacy existente).
+                        return self._build_v2_section_validation_failed_result(
+                            agent_input=agent_input,
+                            sid=sid,
+                            out=out,
+                            raw_dir=raw_dir,
+                            attempt_logs=attempt_logs,
+                            retrieval_rounds=retrieval_rounds,
+                            llm_calls=llm_calls,
+                            validation_calls=validation_calls,
+                            last_errors=v2_execution["last_errors"],
+                            validation_version=policy.get("validation_version"),
+                            start=start,
+                        )
+
                     generated.append(generated_section)
                     continue
 
@@ -1261,6 +1412,14 @@ class DraftWritingAgent:
                 # representa el ArtifactReference "raw_section_outputs".
                 "current_raw_attempt_directory": str(raw_dir),
             }
+            if contract == CANONICAL_SENTENCES_DRAFT_REPRESENTATION_CONTRACT:
+                # ÚNICAMENTE V2 declara esta clave -- legacy (ausente o
+                # "legacy" explícito) mantiene el manifest histórico
+                # sin campo nuevo, byte a byte, tal como garantiza
+                # LEGACY05/LEGACY07b (fase 1). Mismo criterio que
+                # _draft_signature (draft_writing_runtime.py): la clave
+                # solo existe cuando el contrato realmente es V2.
+                manifest["draft_representation_contract"] = contract
             artifacts = write_draft_artifacts(
                 out,
                 draft,

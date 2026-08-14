@@ -222,17 +222,14 @@ def test_import_has_no_side_effects():
     # colateral observable.
     importlib.reload(module)
     assert callable(module.validate_and_parse_sentences_v2)
+    assert callable(module.materialize_initial_section_v2)
     assert callable(module.generate_section_canonical_v2)
-    # generate_section_canonical_v2 sigue siendo un stub en esta fase
-    # -- no se conectó a ninguna lógica real todavía.
-    try:
-        module.generate_section_canonical_v2(
-            section={}, evidence=[], quant_context=None, previous_errors=[], policy={},
-        )
-    except NotImplementedError:
-        pass
-    else:
-        raise AssertionError("generate_section_canonical_v2 no debe estar implementado en fase 2A")
+    # Nota de fase 3: generate_section_canonical_v2 ya NO es un stub
+    # (implementación real desde Fase 3, ver test_canonical_sentences_
+    # v2_phase3_generation.py) -- esta prueba de fase 2A ya no verifica
+    # NotImplementedError; solo confirma que el import en sí es limpio
+    # y expone las funciones esperadas, sin ejecutar ninguna lógica que
+    # requiera un runtime real.
 
 
 @scenario("V2A11. supporting_citations es string en vez de list -> rechazo (INVALID_CITATION, no se filtra en silencio)")

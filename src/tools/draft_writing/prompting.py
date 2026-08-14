@@ -256,3 +256,97 @@ OBSERVACIONES A RESOLVER:
 {forced_block}
 """.strip()
     )
+
+
+def build_section_prompt_v2(section, evidence, quantitative_context, previous_errors, policy):
+    """Prompt del contrato canonical_sentences_v2 (Fase 3) -- SEPARADO
+    por completo de ``build_section_prompt`` (legacy), nunca lo
+    reutiliza ni comparte texto de reglas con él. El LLM produce
+    EXCLUSIVAMENTE ``{"section_id": ..., "sentences": [...]}`` -- nunca
+    ``draft_text``/``claims`` directamente (eso lo deriva el sistema,
+    determinísticamente, en ``materialize_initial_section_v2``).
+
+    Prohibiciones explícitas en el propio prompt: el LLM NO debe
+    producir ``claim``/``claim_id``/``claim_uid``/``sentence_id``/
+    ``identity_action``/``parent_claim_uids`` en ningún elemento de
+    ``sentences[]`` -- el sistema los asigna después
+    (``validate_and_parse_sentences_v2`` rechaza explícitamente
+    cualquiera de estos si el LLM los envía)."""
+
+    section_id = safe_str(section.get("section_id"))
+    allowed_citations = [f"[{row['source_filename']} | {row['chunk_id']}]" for row in evidence]
+    budgets = policy.get("section_budgets") or assign_section_budgets(
+        policy.get("outline_sections") or [section],
+        policy.get("target_total_words", 1000),
+    )
+    budget = budgets[section_id]
+    return f"""
+Eres el agente redactor de un sistema multiagente para estados del arte científicos.
+
+CONTRATO DE SALIDA: canonical_sentences_v2 -- produces ÚNICAMENTE una
+lista de oraciones estructuradas, NUNCA texto de sección ni claims
+directamente. El sistema construye el borrador final a partir de lo
+que devuelvas -- tu única responsabilidad es el CONTENIDO de cada
+oración y sus citas de soporte.
+
+REGLAS:
+1. Usa exclusivamente la evidencia proporcionada.
+2. No uses conocimiento externo ni Ground Truth.
+3. No cites papers o chunks fuera de ALLOWED_CITATIONS.
+4. No inventes autores, años, datasets, métricas, valores ni resultados.
+5. No sustituyas una cita por otra.
+6. Las citas trazables siempre usan [source_filename | chunk_id].
+7. El estilo bibliográfico {policy.get('citation_style', '')} no autoriza inventar autores o años.
+8. {language_instruction(policy.get('output_language', 'español académico'))}
+9. Modo de escritura: {policy.get('writing_mode', '')}. Enfoque: {policy.get('focus_mode', '')}.
+10. Extensión objetivo: {budget['target_words']} palabras;
+    rango orientativo: {budget['minimum_words']}-{budget['maximum_words']}.
+11. UNA oración por elemento de "sentences" -- nunca combines dos
+    oraciones en un solo "text", nunca dejes un "text" vacío.
+12. "text" contiene ÚNICAMENTE el texto de la oración -- SIN ninguna
+    cita dentro. Las citas viven EXCLUSIVAMENTE en
+    "supporting_citations". Nunca escribas [source | chunk] dentro de
+    "text".
+13. "supporting_citations" solo puede contener pares que aparezcan
+    literalmente en ALLOWED_CITATIONS -- nunca inventes ni combines un
+    source_filename con un chunk_id que no correspondan juntos ahí.
+14. Un valor numérico solo puede escribirse si aparece literalmente en
+    uno de los chunks citados por esa misma oración.
+15. Toda oración con contenido factual/científico debe llevar al menos
+    una cita en "supporting_citations". Omite cualquier oración que no
+    tenga evidencia documental real.
+16. PROHIBIDO incluir en cualquier elemento de "sentences" los campos:
+    "claim", "claim_id", "claim_uid", "sentence_id", "identity_action",
+    "parent_claim_uids". El sistema los asigna después -- si los
+    incluyes, la respuesta completa será rechazada.
+17. Devuelve ÚNICAMENTE JSON válido -- sin fences de Markdown (nunca
+    ```json ni ```), sin texto antes ni después del JSON.
+
+FORMATO EXACTO (el único permitido):
+{{
+  "section_id": "{section_id}",
+  "sentences": [
+    {{
+      "text": "Una sola oración, sin citas dentro.",
+      "supporting_citations": [
+        "[source_filename | chunk_id]"
+      ]
+    }}
+  ]
+}}
+
+SECCIÓN DEL ESQUEMA:
+{json.dumps(section, ensure_ascii=False, indent=2)}
+
+ALLOWED_CITATIONS:
+{json.dumps(allowed_citations, ensure_ascii=False, indent=2)}
+
+EVIDENCIA:
+{json.dumps(evidence, ensure_ascii=False, indent=2)}
+
+CONTEXTO CUANTITATIVO CONFIRMADO:
+{json.dumps(quantitative_context, ensure_ascii=False, indent=2)}
+
+ERRORES DE UN INTENTO ANTERIOR:
+{json.dumps(previous_errors or [], ensure_ascii=False, indent=2)}
+""".strip()
