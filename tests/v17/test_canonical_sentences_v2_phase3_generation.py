@@ -3,6 +3,14 @@ Agent06, exclusivamente detrás de draft_representation_contract ==
 "canonical_sentences_v2". Legacy permanece intacto (ver LEGACY 11/11,
 tests/v17/test_canonical_sentences_v2_legacy_isolation.py).
 
+CONTRATO EVIDENCE HANDLES: el LLM referencia evidencia mediante
+identificadores opacos ("E1", "E2", ...) asignados determinísticamente
+por el sistema -- nunca escribe source_filename/chunk_id/
+supporting_citations directamente. En el fixture estándar de Env
+(tests/v16/test_agent06_v16.py) solo hay un chunk de evidencia
+disponible (a.pdf|c1) para S1, así que ese chunk siempre corresponde a
+"E1".
+
 Multidominio y genérico: ningún test usa contenido de un experimento
 real."""
 
@@ -54,8 +62,8 @@ def _v2_ai(env, extra_policy=None):
     return replace(env.ai, policy=policy)
 
 
-def _ok_response(section_id="S1", text="El modelo alcanza una precisión estable en el conjunto de prueba evaluado.", citation="[a.pdf | c1]"):
-    return json.dumps({"section_id": section_id, "sentences": [{"text": text, "supporting_citations": [citation] if citation else []}]})
+def _ok_response(section_id="S1", text="El modelo alcanza una precisión estable en el conjunto de prueba evaluado.", evidence_id="E1"):
+    return json.dumps({"section_id": section_id, "sentences": [{"text": text, "supporting_evidence_ids": [evidence_id] if evidence_id else []}]})
 
 
 @scenario("V3-01. Flag legacy no invoca nada V2 (ausencia del flag)")
@@ -97,17 +105,18 @@ def test_v2_flag_invokes_v2_runtime():
     assert result.execution_status.value == "COMPLETED"
 
 
-@scenario("V3-03. El prompt V2 no pide draft_text ni claims -- pide sentences[]")
+@scenario("V3-03. El prompt V2 no pide draft_text ni claims -- pide sentences[] con supporting_evidence_ids, nunca supporting_citations/source_filename/chunk_id")
 def test_v2_prompt_does_not_ask_for_draft_text_or_claims():
     section = {"section_id": "S1", "section_title": "Methods"}
     prompt = build_section_prompt_v2(section, [], {}, [], {})
     assert '"sentences"' in prompt
+    assert '"supporting_evidence_ids"' in prompt
     assert '"draft_text": ""' not in prompt
     assert '"claims": [' not in prompt
-    assert "no debe volver a escribir" not in prompt  # el prompt no necesita esa frase -- solo confirmamos que el formato pedido es sentences[]
+    assert '"supporting_citations"' not in prompt.split("FORMATO EXACTO")[1].split("SECCIÓN DEL ESQUEMA")[0]
 
 
-@scenario("V3-04. Respuesta V2 válida -> materialización correcta (claim == sentence.text)")
+@scenario("V3-04. Respuesta V2 válida (E1) -> materialización correcta (claim == sentence.text sin puntuación)")
 def test_valid_v2_response_materializes_correctly():
     e = Env(attempt=1)
     e.agent = DraftWritingAgent(DraftWritingRuntime(lambda p: _ok_response(), e.collection))
@@ -115,13 +124,14 @@ def test_valid_v2_response_materializes_correctly():
     assert result.quality_status.value == "APPROVED"
     draft = json.loads((e.out / "state_of_art_draft.json").read_text())
     s1 = next(s for s in draft["sections"] if s["section_id"] == "S1")
-    assert s1["claims"][0]["claim"] == "El modelo alcanza una precisión estable en el conjunto de prueba evaluado."
+    assert s1["claims"][0]["claim"] == "El modelo alcanza una precisión estable en el conjunto de prueba evaluado"
+    assert s1["claims"][0]["supporting_citations"] == ["[a.pdf | c1]"]
 
 
 @scenario("V3-05. Dos oraciones en un item -> retry")
 def test_two_sentences_in_one_item_triggers_retry():
     responses = [
-        json.dumps({"section_id": "S1", "sentences": [{"text": "Primera oración. Segunda oración en el mismo item.", "supporting_citations": ["[a.pdf | c1]"]}]}),
+        json.dumps({"section_id": "S1", "sentences": [{"text": "Primera oración. Segunda oración en el mismo item.", "supporting_evidence_ids": ["E1"]}]}),
         _ok_response(),
     ]
     calls = {"n": 0}
@@ -138,10 +148,10 @@ def test_two_sentences_in_one_item_triggers_retry():
     assert result.quality_status.value == "APPROVED"
 
 
-@scenario("V3-06. Cita inválida -> retry")
+@scenario("V3-06. Handle de evidencia inexistente (E99) -> retry, INVALID_EVIDENCE_ID")
 def test_invalid_citation_triggers_retry():
     responses = [
-        json.dumps({"section_id": "S1", "sentences": [{"text": "El modelo alcanza una precisión estable en el conjunto de prueba evaluado.", "supporting_citations": ["[a.pdf | chunk_inexistente]"]}]}),
+        json.dumps({"section_id": "S1", "sentences": [{"text": "El modelo alcanza una precisión estable en el conjunto de prueba evaluado.", "supporting_evidence_ids": ["E99"]}]}),
         _ok_response(),
     ]
     calls = {"n": 0}
@@ -158,10 +168,10 @@ def test_invalid_citation_triggers_retry():
     assert result.quality_status.value == "APPROVED"
 
 
-@scenario("V3-07. Cita inline -> retry")
+@scenario("V3-07. Cita inline en text -> retry")
 def test_inline_citation_triggers_retry():
     responses = [
-        json.dumps({"section_id": "S1", "sentences": [{"text": "El modelo alcanza [a.pdf | c1] una precisión estable en el conjunto evaluado.", "supporting_citations": ["[a.pdf | c1]"]}]}),
+        json.dumps({"section_id": "S1", "sentences": [{"text": "El modelo alcanza [a.pdf | c1] una precisión estable en el conjunto evaluado.", "supporting_evidence_ids": ["E1"]}]}),
         _ok_response(),
     ]
     calls = {"n": 0}
@@ -198,10 +208,10 @@ def test_wrong_section_id_triggers_retry():
     assert result.quality_status.value == "APPROVED"
 
 
-@scenario("V3-09. El segundo intento recibe los códigos de error del primero en el prompt")
+@scenario("V3-09. El segundo intento recibe los códigos de error del primero en el prompt (INVALID_EVIDENCE_ID)")
 def test_second_attempt_receives_first_attempt_errors():
     responses = [
-        json.dumps({"section_id": "S1", "sentences": [{"text": "El modelo alcanza una precisión estable en el conjunto de prueba evaluado.", "supporting_citations": ["[a.pdf | chunk_inexistente]"]}]}),
+        json.dumps({"section_id": "S1", "sentences": [{"text": "El modelo alcanza una precisión estable en el conjunto de prueba evaluado.", "supporting_evidence_ids": ["E99"]}]}),
         _ok_response(),
     ]
     seen_prompts = []
@@ -217,23 +227,20 @@ def test_second_attempt_receives_first_attempt_errors():
     e.agent = DraftWritingAgent(DraftWritingRuntime(invoke, e.collection))
     e.agent.execute(_v2_ai(e))
     assert len(seen_prompts) == 2
-    assert "INVALID_CITATION" in seen_prompts[1]
+    assert "INVALID_EVIDENCE_ID" in seen_prompts[1]
 
 
 @scenario("V3-10. Respuestas inválidas en todos los intentos -> nunca fallback legacy (contrato NEEDS_REVISION normal, no FAILED)")
 def test_all_attempts_invalid_never_falls_back_to_legacy():
     def invoke(p):
-        return json.dumps({"section_id": "S1", "sentences": [{"text": "", "supporting_citations": []}]})
+        return json.dumps({"section_id": "S1", "sentences": [{"text": "", "supporting_evidence_ids": []}]})
 
     e = Env(attempt=1)
     e.agent = DraftWritingAgent(DraftWritingRuntime(invoke, e.collection))
     result = e.agent.execute(_v2_ai(e))
-    # Nunca produce un draft (ni legacy ni V2) -- fail-closed real.
-    # Y NUNCA execution_status=FAILED: es un fallo de validación
-    # científica/estructural controlado, mismo contrato que legacy.
     assert result.execution_status.value == "COMPLETED"
     assert result.quality_status.value == "NEEDS_REVISION"
-    assert result.requested_transition.action.value == "RETRY"  # attempt_number=1
+    assert result.requested_transition.action.value == "RETRY"
     assert not (e.out / "state_of_art_draft.json").exists()
     assert result.decision.code == "SECTION_VALIDATION_FAILED"
 
@@ -302,7 +309,7 @@ def test_materializer_receives_only_validated_payload():
     assert received[0][0]["text"] == "El modelo alcanza una precisión estable en el conjunto de prueba evaluado."
 
 
-@scenario("V3-14. claim resultante sigue siendo copia exacta de sentence.text, de punta a punta")
+@scenario("V3-14. claim resultante sigue siendo copia exacta de sentence.text SIN puntuación final (ver V2B04), de punta a punta")
 def test_claim_is_exact_copy_end_to_end():
     text = "El resultado observado replica de forma consistente los hallazgos reportados previamente."
     e = Env(attempt=1)
@@ -310,7 +317,7 @@ def test_claim_is_exact_copy_end_to_end():
     e.agent.execute(_v2_ai(e))
     draft = json.loads((e.out / "state_of_art_draft.json").read_text())
     s1 = next(s for s in draft["sections"] if s["section_id"] == "S1")
-    assert s1["claims"][0]["claim"] == text
+    assert s1["claims"][0]["claim"] == text.rstrip(".")
 
 
 @scenario("V3-15. El manifest V2 declara explícitamente canonical_sentences_v2")
@@ -363,9 +370,6 @@ def test_section_output_matches_current_agent06_contract():
         assert key in s1
     assert isinstance(s1["claims"], list)
     assert isinstance(s1["draft_text"], str)
-    # También se generaron los CSVs estándar (draft_sections.csv etc.)
-    # -- confirma que build_draft_reports procesó la sección V2 sin
-    # necesitar ningún cambio de consumidor.
     assert (e.out / "draft_sections.csv").exists()
     assert (e.out / "draft_claim_evidence.csv").exists()
 
@@ -389,12 +393,7 @@ def test_r5_instrumentation_present_in_each_v2_attempt():
 @scenario("V3-20. Mismo prompt/input no implica reutilización de raw response entre intentos -- metadata demuestra invocaciones reales distintas")
 def test_same_input_does_not_imply_response_reuse_across_attempts():
     def invoke(p):
-        # Respuesta SIEMPRE inválida y SIEMPRE igual -- fuerza que el
-        # prompt (con previous_errors idénticos tras la 2da iteración
-        # en adelante, si el error no cambia) se estabilice, pero cada
-        # invocación real sigue siendo distinta y verificable por
-        # metadata.
-        return json.dumps({"section_id": "S1", "sentences": [{"text": "", "supporting_citations": []}]})
+        return json.dumps({"section_id": "S1", "sentences": [{"text": "", "supporting_evidence_ids": []}]})
 
     e = Env(attempt=1)
     e.agent = DraftWritingAgent(DraftWritingRuntime(invoke, e.collection))
@@ -404,7 +403,7 @@ def test_same_input_does_not_imply_response_reuse_across_attempts():
     for p in sorted(attempt_dir.glob("S1_attempt_*_validation.json")):
         audits.append(json.loads(p.read_text())["retry_audit"])
     sequence = [a["runtime_invoke_sequence_number"] for a in audits]
-    assert sequence == sorted(set(sequence))  # estrictamente creciente, cada intento una invocación real distinta
+    assert sequence == sorted(set(sequence))
     assert all(a["runtime_invoke_executed"] is True for a in audits)
 
 
@@ -421,7 +420,7 @@ def test_v3_21_single_call_counters_correct():
 @scenario("V3-22. Sección que requiere 2 intentos -> ambos contadores reportan 2")
 def test_v3_22_two_attempts_counters_correct():
     responses = [
-        json.dumps({"section_id": "S1", "sentences": [{"text": "Primera. Segunda oración en el mismo item.", "supporting_citations": ["[a.pdf | c1]"]}]}),
+        json.dumps({"section_id": "S1", "sentences": [{"text": "Primera. Segunda oración en el mismo item.", "supporting_evidence_ids": ["E1"]}]}),
         _ok_response(),
     ]
     calls = {"n": 0}
@@ -456,8 +455,8 @@ def _two_section_env_with_evidence():
 def test_v3_23_global_sequence_across_two_sections():
     e = _two_section_env_with_evidence()
     responses = {
-        "S1": _ok_response(section_id="S1", text="El modelo alcanza una precisión estable en el conjunto de prueba evaluado.", citation="[a.pdf | c1]"),
-        "S2": _ok_response(section_id="S2", text="El segundo experimento confirma los hallazgos observados en el estudio previo.", citation="[a.pdf | c1]"),
+        "S1": _ok_response(section_id="S1", text="El modelo alcanza una precisión estable en el conjunto de prueba evaluado."),
+        "S2": _ok_response(section_id="S2", text="El segundo experimento confirma los hallazgos observados en el estudio previo."),
     }
 
     def invoke(p):
@@ -477,9 +476,8 @@ def test_v3_24_attempt_logs_contain_v2_validations_per_section():
 
     def invoke(p):
         if '"S1"' in p:
-            return _ok_response(section_id="S1", text="El modelo alcanza una precisión estable en el conjunto de prueba evaluado.", citation="[a.pdf | c1]")
-        # S2 nunca produce un sentences[] válido -- agota sus reintentos.
-        return json.dumps({"section_id": "S2", "sentences": [{"text": "", "supporting_citations": []}]})
+            return _ok_response(section_id="S1", text="El modelo alcanza una precisión estable en el conjunto de prueba evaluado.")
+        return json.dumps({"section_id": "S2", "sentences": [{"text": "", "supporting_evidence_ids": []}]})
 
     e.agent = DraftWritingAgent(DraftWritingRuntime(invoke, e.collection))
     result = e.agent.execute(_v2_ai(e))
@@ -488,13 +486,10 @@ def test_v3_24_attempt_logs_contain_v2_validations_per_section():
     report = json.loads((e.out / "draft_validation_report.json").read_text())
     assert report["failed_section"] == "S2"
     generation_attempts = report["generation_attempts"]
-    # AMBAS secciones están presentes -- no solo la que falló.
     assert set(generation_attempts.keys()) == {"S1", "S2"}
-    # S1 conserva su ÚNICA validación V2 real (éxito, un solo intento).
     assert len(generation_attempts["S1"]) == 1
     assert generation_attempts["S1"][0]["contract"] == "canonical_sentences_v2"
     assert generation_attempts["S1"][0]["validation"]["validation_ok"] is True
-    # S2 conserva sus 3 intentos reales (agotados), cada uno inválido.
     assert len(generation_attempts["S2"]) == 3
     for entry in generation_attempts["S2"]:
         assert entry["contract"] == "canonical_sentences_v2"
@@ -504,7 +499,7 @@ def test_v3_24_attempt_logs_contain_v2_validations_per_section():
 @scenario("V3-25. Agotamiento en intento externo 1 -> COMPLETED + NEEDS_REVISION + RETRY, nunca FAILED")
 def test_v3_25_exhaustion_attempt1_yields_retry():
     def invoke(p):
-        return json.dumps({"section_id": "S1", "sentences": [{"text": "", "supporting_citations": []}]})
+        return json.dumps({"section_id": "S1", "sentences": [{"text": "", "supporting_evidence_ids": []}]})
 
     e = Env(attempt=1)
     e.agent = DraftWritingAgent(DraftWritingRuntime(invoke, e.collection))
@@ -517,7 +512,7 @@ def test_v3_25_exhaustion_attempt1_yields_retry():
 @scenario("V3-26. Agotamiento en intento externo >1 -> COMPLETED + NEEDS_REVISION + HALT_STAGE")
 def test_v3_26_exhaustion_attempt2_yields_halt_stage():
     def invoke(p):
-        return json.dumps({"section_id": "S1", "sentences": [{"text": "", "supporting_citations": []}]})
+        return json.dumps({"section_id": "S1", "sentences": [{"text": "", "supporting_evidence_ids": []}]})
 
     e = Env(attempt=2)
     e.agent = DraftWritingAgent(DraftWritingRuntime(invoke, e.collection))
@@ -527,20 +522,20 @@ def test_v3_26_exhaustion_attempt2_yields_halt_stage():
     assert result.requested_transition.action.value == "HALT_STAGE"
 
 
-@scenario("V3-27. El reporte parcial conserva los códigos V2 EXACTOS del último intento")
+@scenario("V3-27. El reporte parcial conserva los códigos V2 EXACTOS del último intento (INVALID_EVIDENCE_ID)")
 def test_v3_27_partial_report_preserves_exact_v2_error_codes():
     def invoke(p):
-        return json.dumps({"section_id": "S1", "sentences": [{"text": "El modelo alcanza una precisión estable en el conjunto evaluado.", "supporting_citations": ["[a.pdf | chunk_inexistente]"]}]})
+        return json.dumps({"section_id": "S1", "sentences": [{"text": "El modelo alcanza una precisión estable en el conjunto evaluado.", "supporting_evidence_ids": ["E99"]}]})
 
     e = Env(attempt=1)
     e.agent = DraftWritingAgent(DraftWritingRuntime(invoke, e.collection))
     e.agent.execute(_v2_ai(e))
     report = json.loads((e.out / "draft_validation_report.json").read_text())
     assert report["contract"] == "canonical_sentences_v2"
-    assert any("INVALID_CITATION" in str(err) for err in report["last_attempt_errors"])
+    assert any("INVALID_EVIDENCE_ID" in str(err) for err in report["last_attempt_errors"])
 
 
-@scenario("V3-28. Sigue sin existir fallback a legacy, incluso tras la corrección de contrato")
+@scenario("V3-28. Sigue sin existir fallback a legacy, incluso tras el cambio de contrato a evidence handles")
 def test_v3_28_still_no_legacy_fallback_after_fix():
     import src.tools.draft_writing.normalization as norm_module
 
@@ -554,7 +549,7 @@ def test_v3_28_still_no_legacy_fallback_after_fix():
     norm_module.normalize_generated_section = traced
     try:
         def invoke(p):
-            return json.dumps({"section_id": "S1", "sentences": [{"text": "", "supporting_citations": []}]})
+            return json.dumps({"section_id": "S1", "sentences": [{"text": "", "supporting_evidence_ids": []}]})
 
         e = Env(attempt=1)
         e.agent = DraftWritingAgent(DraftWritingRuntime(invoke, e.collection))
@@ -568,7 +563,7 @@ def test_v3_28_still_no_legacy_fallback_after_fix():
 @scenario("V3-29. El reporte parcial V2 contiene validation_version")
 def test_v3_29_partial_report_contains_validation_version():
     def invoke(p):
-        return json.dumps({"section_id": "S1", "sentences": [{"text": "", "supporting_citations": []}]})
+        return json.dumps({"section_id": "S1", "sentences": [{"text": "", "supporting_evidence_ids": []}]})
 
     e = Env(attempt=1)
     e.agent = DraftWritingAgent(DraftWritingRuntime(invoke, e.collection))
@@ -581,7 +576,7 @@ def test_v3_29_partial_report_contains_validation_version():
 @scenario("V3-30. El reporte parcial V2 contiene section_attempts correcto (número real de intentos agotados)")
 def test_v3_30_partial_report_contains_correct_section_attempts():
     def invoke(p):
-        return json.dumps({"section_id": "S1", "sentences": [{"text": "", "supporting_citations": []}]})
+        return json.dumps({"section_id": "S1", "sentences": [{"text": "", "supporting_evidence_ids": []}]})
 
     e = Env(attempt=1)
     e.agent = DraftWritingAgent(DraftWritingRuntime(invoke, e.collection))
@@ -594,13 +589,29 @@ def test_v3_30_partial_report_contains_correct_section_attempts():
 @scenario("V3-31. quality_metrics.technical.section_attempts coincide con el reporte")
 def test_v3_31_quality_metrics_section_attempts_matches_report():
     def invoke(p):
-        return json.dumps({"section_id": "S1", "sentences": [{"text": "", "supporting_citations": []}]})
+        return json.dumps({"section_id": "S1", "sentences": [{"text": "", "supporting_evidence_ids": []}]})
 
     e = Env(attempt=1)
     e.agent = DraftWritingAgent(DraftWritingRuntime(invoke, e.collection))
     result = e.agent.execute(_v2_ai(e))
     report = json.loads((e.out / "draft_validation_report.json").read_text())
     assert result.quality_metrics["technical"]["section_attempts"] == report["section_attempts"]
+
+
+@scenario("V3-32 (evidence handles, regresión genérica). El LLM que intenta devolver supporting_citations directamente -> UNEXPECTED_SENTENCE_FIELD, sin fallback ni reparación, de punta a punta")
+def test_v3_32_llm_returning_supporting_citations_rejected_end_to_end():
+    def invoke(p):
+        return json.dumps({"section_id": "S1", "sentences": [{
+            "text": "El modelo alcanza una precisión estable en el conjunto de prueba evaluado.",
+            "supporting_citations": ["[a.pdf | c1]"],  # campo prohibido -- el LLM ya no debe producirlo
+        }]})
+
+    e = Env(attempt=1)
+    e.agent = DraftWritingAgent(DraftWritingRuntime(invoke, e.collection))
+    result = e.agent.execute(_v2_ai(e))
+    assert result.quality_status.value == "NEEDS_REVISION"
+    report = json.loads((e.out / "draft_validation_report.json").read_text())
+    assert any("UNEXPECTED_SENTENCE_FIELD" in str(err) and "supporting_citations" in str(err) for err in report["last_attempt_errors"])
 
 
 if __name__ == "__main__":
@@ -636,6 +647,7 @@ if __name__ == "__main__":
         test_v3_29_partial_report_contains_validation_version,
         test_v3_30_partial_report_contains_correct_section_attempts,
         test_v3_31_quality_metrics_section_attempts_matches_report,
+        test_v3_32_llm_returning_supporting_citations_rejected_end_to_end,
     ):
         fn()
 

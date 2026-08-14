@@ -259,22 +259,40 @@ OBSERVACIONES A RESOLVER:
 
 
 def build_section_prompt_v2(section, evidence, quantitative_context, previous_errors, policy):
-    """Prompt del contrato canonical_sentences_v2 (Fase 3) -- SEPARADO
-    por completo de ``build_section_prompt`` (legacy), nunca lo
-    reutiliza ni comparte texto de reglas con él. El LLM produce
-    EXCLUSIVAMENTE ``{"section_id": ..., "sentences": [...]}`` -- nunca
-    ``draft_text``/``claims`` directamente (eso lo deriva el sistema,
-    determinísticamente, en ``materialize_initial_section_v2``).
+    """Prompt del contrato canonical_sentences_v2 (Fase 3, evidence
+    handles) -- SEPARADO por completo de ``build_section_prompt``
+    (legacy), nunca lo reutiliza ni comparte texto de reglas con él.
+    El LLM produce EXCLUSIVAMENTE ``{"section_id": ..., "sentences":
+    [...]}`` -- nunca ``draft_text``/``claims`` directamente (eso lo
+    deriva el sistema, determinísticamente, en
+    ``materialize_initial_section_v2``).
+
+    Evidence handles: el LLM NUNCA escribe ``source_filename``/
+    ``chunk_id``/``supporting_citations``/strings ``[source | chunk]``
+    -- solo referencia evidencia mediante identificadores opacos
+    (``"E1"``, ``"E2"``, ...) que el SISTEMA asignó determinísticamente
+    (``build_evidence_handle_map``, ``canonical_sentences.py``, mismo
+    orden que ``evidence``) antes de construir este prompt. El LLM ve
+    cada evidencia numerada con su ``source_filename``/``chunk_id``/
+    ``text`` reales -- pero solo puede DEVOLVER el número, nunca los
+    identificadores técnicos en sí. Esto elimina estructuralmente la
+    posibilidad de que el LLM invente o combine un ``source_filename``
+    con un ``chunk_id`` que no correspondan juntos: no existe ningún
+    campo de salida donde pueda escribir esos valores.
 
     Prohibiciones explícitas en el propio prompt: el LLM NO debe
-    producir ``claim``/``claim_id``/``claim_uid``/``sentence_id``/
+    producir ``supporting_citations``/``source_filename``/``chunk_id``/
+    ``claim``/``claim_id``/``claim_uid``/``sentence_id``/
     ``identity_action``/``parent_claim_uids`` en ningún elemento de
-    ``sentences[]`` -- el sistema los asigna después
+    ``sentences[]`` -- el sistema los asigna/resuelve después
     (``validate_and_parse_sentences_v2`` rechaza explícitamente
     cualquiera de estos si el LLM los envía)."""
 
     section_id = safe_str(section.get("section_id"))
-    allowed_citations = [f"[{row['source_filename']} | {row['chunk_id']}]" for row in evidence]
+    evidence_handles = [
+        {"handle": f"E{i + 1}", "source_filename": row["source_filename"], "chunk_id": row["chunk_id"], "text": row.get("text", "")}
+        for i, row in enumerate(evidence)
+    ]
     budgets = policy.get("section_budgets") or assign_section_budgets(
         policy.get("outline_sections") or [section],
         policy.get("target_total_words", 1000),
@@ -287,39 +305,42 @@ CONTRATO DE SALIDA: canonical_sentences_v2 -- produces ÚNICAMENTE una
 lista de oraciones estructuradas, NUNCA texto de sección ni claims
 directamente. El sistema construye el borrador final a partir de lo
 que devuelvas -- tu única responsabilidad es el CONTENIDO de cada
-oración y sus citas de soporte.
+oración y a QUÉ evidencia (por número) corresponde.
 
 REGLAS:
-1. Usa exclusivamente la evidencia proporcionada.
+1. Usa exclusivamente la evidencia proporcionada en EVIDENCIA_DISPONIBLE.
 2. No uses conocimiento externo ni Ground Truth.
-3. No cites papers o chunks fuera de ALLOWED_CITATIONS.
+3. No referencies ningún número de evidencia (handle) fuera de los
+   listados en EVIDENCIA_DISPONIBLE.
 4. No inventes autores, años, datasets, métricas, valores ni resultados.
-5. No sustituyas una cita por otra.
-6. Las citas trazables siempre usan [source_filename | chunk_id].
-7. El estilo bibliográfico {policy.get('citation_style', '')} no autoriza inventar autores o años.
-8. {language_instruction(policy.get('output_language', 'español académico'))}
-9. Modo de escritura: {policy.get('writing_mode', '')}. Enfoque: {policy.get('focus_mode', '')}.
-10. Extensión objetivo: {budget['target_words']} palabras;
-    rango orientativo: {budget['minimum_words']}-{budget['maximum_words']}.
-11. UNA oración por elemento de "sentences" -- nunca combines dos
+5. No sustituyas un handle de evidencia por otro.
+6. El estilo bibliográfico {policy.get('citation_style', '')} no autoriza inventar autores o años.
+7. {language_instruction(policy.get('output_language', 'español académico'))}
+8. Modo de escritura: {policy.get('writing_mode', '')}. Enfoque: {policy.get('focus_mode', '')}.
+9. Extensión objetivo: {budget['target_words']} palabras;
+   rango orientativo: {budget['minimum_words']}-{budget['maximum_words']}.
+10. UNA oración por elemento de "sentences" -- nunca combines dos
     oraciones en un solo "text", nunca dejes un "text" vacío.
-12. "text" contiene ÚNICAMENTE el texto de la oración -- SIN ninguna
-    cita dentro. Las citas viven EXCLUSIVAMENTE en
-    "supporting_citations". Nunca escribas [source | chunk] dentro de
-    "text".
-13. "supporting_citations" solo puede contener pares que aparezcan
-    literalmente en ALLOWED_CITATIONS -- nunca inventes ni combines un
-    source_filename con un chunk_id que no correspondan juntos ahí.
-14. Un valor numérico solo puede escribirse si aparece literalmente en
-    uno de los chunks citados por esa misma oración.
-15. Toda oración con contenido factual/científico debe llevar al menos
-    una cita en "supporting_citations". Omite cualquier oración que no
-    tenga evidencia documental real.
-16. PROHIBIDO incluir en cualquier elemento de "sentences" los campos:
-    "claim", "claim_id", "claim_uid", "sentence_id", "identity_action",
-    "parent_claim_uids". El sistema los asigna después -- si los
-    incluyes, la respuesta completa será rechazada.
-17. Devuelve ÚNICAMENTE JSON válido -- sin fences de Markdown (nunca
+11. "text" contiene ÚNICAMENTE el texto de la oración -- SIN ningún
+    identificador técnico ni número de evidencia dentro. Nunca escribas
+    "source_filename", "chunk_id", corchetes de cita, ni el propio
+    handle (ej. "E1") dentro de "text".
+12. "supporting_evidence_ids" solo puede contener HANDLES (los números
+    "E1", "E2", ... tal como aparecen en EVIDENCIA_DISPONIBLE) -- NUNCA
+    el source_filename ni el chunk_id en sí. Un handle que no exista en
+    EVIDENCIA_DISPONIBLE invalida la respuesta completa.
+13. Un valor numérico solo puede escribirse si aparece literalmente en
+    el texto de uno de los handles de evidencia citados por esa misma
+    oración.
+14. Toda oración con contenido factual/científico debe llevar al menos
+    un handle en "supporting_evidence_ids". Omite cualquier oración que
+    no tenga evidencia documental real.
+15. PROHIBIDO incluir en cualquier elemento de "sentences" los campos:
+    "supporting_citations", "source_filename", "chunk_id", "claim",
+    "claim_id", "claim_uid", "sentence_id", "identity_action",
+    "parent_claim_uids". El sistema los asigna/resuelve después -- si
+    los incluyes, la respuesta completa será rechazada.
+16. Devuelve ÚNICAMENTE JSON válido -- sin fences de Markdown (nunca
     ```json ni ```), sin texto antes ni después del JSON.
 
 FORMATO EXACTO (el único permitido):
@@ -327,10 +348,8 @@ FORMATO EXACTO (el único permitido):
   "section_id": "{section_id}",
   "sentences": [
     {{
-      "text": "Una sola oración, sin citas dentro.",
-      "supporting_citations": [
-        "[source_filename | chunk_id]"
-      ]
+      "text": "Una sola oración, sin identificadores técnicos dentro.",
+      "supporting_evidence_ids": ["E1"]
     }}
   ]
 }}
@@ -338,11 +357,8 @@ FORMATO EXACTO (el único permitido):
 SECCIÓN DEL ESQUEMA:
 {json.dumps(section, ensure_ascii=False, indent=2)}
 
-ALLOWED_CITATIONS:
-{json.dumps(allowed_citations, ensure_ascii=False, indent=2)}
-
-EVIDENCIA:
-{json.dumps(evidence, ensure_ascii=False, indent=2)}
+EVIDENCIA_DISPONIBLE (referencia cada una ÚNICAMENTE por su "handle" -- nunca por source_filename/chunk_id):
+{json.dumps(evidence_handles, ensure_ascii=False, indent=2)}
 
 CONTEXTO CUANTITATIVO CONFIRMADO:
 {json.dumps(quantitative_context, ensure_ascii=False, indent=2)}

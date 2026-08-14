@@ -75,6 +75,7 @@ from src.agents.draft_writing_agent import DraftWritingAgent  # noqa: E402
 from src.config.verification_policy_config import get_verification_input_policy  # noqa: E402
 from src.tools.draft_writing.canonical_sentences import (  # noqa: E402
     _fingerprint_claim_text,
+    build_evidence_handle_map,
     materialize_initial_section_v2,
     validate_and_parse_sentences_v2,
 )
@@ -235,7 +236,7 @@ def _single_section_fixture(text, citation_source="paper_a.pdf", citation_chunk=
         "section_id": "S1", "section_title": "Methods", "section_type": "linea_tematica",
         "purpose": "p", "key_arguments": ["a"], "evidence_needs": ["e"],
         "papers_to_use": [{"source_filename": citation_source, "title": "A"}],
-    }], json.dumps({"section_id": "S1", "sentences": [{"text": text, "supporting_citations": [f"[{citation_source} | {citation_chunk}]"]}]})
+    }], json.dumps({"section_id": "S1", "sentences": [{"text": text, "supporting_evidence_ids": ["E1"]}]})
 
 
 def _run_06_v2_to_07_committed(*, text=LONG_TEXT, sections=None, response=None):
@@ -384,7 +385,7 @@ def test_v4_14_15_real_orchestrator_blocks_07_when_06_fails():
     from src.orchestration.decision_engine import validate_transition
 
     sections, _ = _single_section_fixture(LONG_TEXT)
-    invalid_response = json.dumps({"section_id": "S1", "sentences": [{"text": "", "supporting_citations": []}]})
+    invalid_response = json.dumps({"section_id": "S1", "sentences": [{"text": "", "supporting_evidence_ids": []}]})
 
     tmp = tempfile.TemporaryDirectory()
     try:
@@ -599,8 +600,8 @@ def test_final_claim_text_contract_all_punctuation_suffixes():
         (base + "...", "..."),
     ]
     for text, suffix in cases:
-        payload = {"section_id": "SX", "sentences": [{"text": text, "supporting_citations": ["[p.pdf | c1]"]}]}
-        parsed = validate_and_parse_sentences_v2(payload, {("p.pdf", "c1")})
+        payload = {"section_id": "SX", "sentences": [{"text": text, "supporting_evidence_ids": ["E1"]}]}
+        parsed = validate_and_parse_sentences_v2(payload, build_evidence_handle_map([{"source_filename": "p.pdf", "chunk_id": "c1"}]))
         assert parsed["validation_ok"] is True, (text, parsed["errors"])
 
         # sentence.text permanece intacto (incluido el sufijo original)
