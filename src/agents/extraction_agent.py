@@ -92,6 +92,11 @@ from src.tools.extraction.revision_strategy import (
     plan_by_source,
     missing_critical_fields,
 )
+from src.tools.extraction.review_exclusion import (
+    EXCLUSION_AUDIT_COLUMNS,
+    apply_review_exclusion_policy,
+    is_review_excluded,
+)
 
 
 EXPECTED_STAGE_NAME = "03_agente_extraccion_kb"
@@ -110,6 +115,7 @@ _REQUIRED_PATH_KEYS = (
     "CARDS_ERRORS_CSV_PATH",
     "CARDS_QUALITY_CSV_PATH",
     "CARDS_REVISION_PLAN_CSV_PATH",
+    "CARDS_REVIEW_EXCLUSION_AUDIT_CSV_PATH",
     "RETRIEVAL_TRACE_CSV_PATH",
     "EXTRACTION_MANIFEST_PATH",
     "CHUNKS_VALIDATION_REPORT_PATH",
@@ -561,6 +567,7 @@ class ExtractionAgent:
             extraction_errors: list[dict[str, Any]]
             retrieval_trace_rows: list[dict[str, Any]]
             cards: list[dict[str, Any]]
+            review_exclusion_audit_rows: list[dict[str, Any]] = []
             initial_calls = 0
             repair_calls = 0
             bad_after_repair: list[str] = []
@@ -645,6 +652,24 @@ class ExtractionAgent:
                     extraction_errors = title_result_initial["extraction_errors"]
                     title_calls_initial = int(title_result_initial["llm_calls"])
                     llm_calls += title_calls_initial
+
+                    # Exclusión determinista y auditable de reviews
+                    # (ver review_exclusion.py) -- ANTES del plan de
+                    # revisión, para que una review excluida nunca
+                    # genere una fila MISSING_CRITICAL_FIELDS por
+                    # carecer de resultados empíricos que nunca tuvo.
+                    exclusion_policy = dict(
+                        signature_policy.get("extraction_policy", {})
+                    )
+                    exclusion_result_initial = apply_review_exclusion_policy(
+                        cards,
+                        exclude_reviews=bool(exclusion_policy.get("exclude_reviews", False)),
+                        created_at=self.dependencies.now_factory(),
+                    )
+                    cards = exclusion_result_initial["cards"]
+                    review_exclusion_audit_rows.extend(
+                        exclusion_result_initial["audit_rows"]
+                    )
 
                     revision_rows = build_revision_plan(
                         cards,
@@ -908,36 +933,15 @@ class ExtractionAgent:
             title_calls = 0
             cards_need_classification = False
 
-            # Notebook order: summary and quality are generated before title
-            # repair and relevance classification.
-            summary_rows = [
-                build_summary_row(card)
-                for card in cards
-            ]
-            quality_rows = [
-                self._quality_row(card)
-                for card in cards
-            ]
-            summary_dataframe = pd.DataFrame(
-                summary_rows,
-                columns=SUMMARY_COLUMNS,
-            )
-            quality_dataframe = pd.DataFrame(
-                quality_rows,
-                columns=QUALITY_COLUMNS,
-            )
-            self.dependencies.save_dataframe(
-                summary_dataframe,
-                paths[
-                    "CARDS_SUMMARY_CSV_PATH"
-                ],
-            )
-            self.dependencies.save_dataframe(
-                quality_dataframe,
-                paths[
-                    "CARDS_QUALITY_CSV_PATH"
-                ],
-            )
+            # Problema 2 (regresión de artefactos desfasados): summary/
+            # quality YA NO se construyen ni se guardan aquí -- se
+            # reconstruyen al FINAL de este bloque, después de TODAS
+            # las mutaciones finales de la ficha (repair de extracción,
+            # title repair, clasificación de relevancia y exclusión de
+            # reviews), para que scientific_cards_quality_check.csv y
+            # el summary reflejen exactamente las fichas committed
+            # (ver el bloque "Ensure the primary card/error/trace
+            # artifacts exist" más abajo).
 
             title_result = (
                 self.dependencies.run_title_repair(
@@ -1075,7 +1079,7 @@ class ExtractionAgent:
 
                 relevance_result = (
                     self.dependencies.run_relevance(
-                        cards,
+                        [c for c in cards if not is_review_excluded(c)],
                         should_rebuild_extraction=(
                             should_rebuild
                         ),
@@ -1085,7 +1089,22 @@ class ExtractionAgent:
                         ),
                     )
                 )
-                cards = relevance_result["cards"]
+                # Fichas YA excluidas de forma determinista (Paso 1,
+                # intento 1) NUNCA se pasan al clasificador LLM de
+                # relevancia -- ni gastan una llamada innecesaria, ni
+                # arriesgan que su include_in_state_of_art/relevance_
+                # level/task_type sean sobrescritos por una
+                # reclasificación que no las considera. Se recombinan
+                # aquí, preservadas intactas, en su posición original.
+                classified_by_source = {
+                    str(c.get("source_filename", "")): c
+                    for c in relevance_result["cards"]
+                }
+                cards = [
+                    card if is_review_excluded(card)
+                    else classified_by_source.get(str(card.get("source_filename", "")), card)
+                    for card in cards
+                ]
                 extraction_errors.extend(
                     relevance_result["errors"]
                 )
@@ -1122,6 +1141,35 @@ class ExtractionAgent:
                         "CARDS_ERRORS_CSV_PATH"
                     ],
                     policy["error_columns"],
+                )
+
+            # Exclusión determinista y auditable de reviews (ver
+            # review_exclusion.py) -- ÚLTIMA mutación de la ficha antes
+            # de que la KB/summary/quality se construyan, para que
+            # todas reflejen exactamente el estado final: repair de
+            # extracción + title repair + clasificación de relevancia
+            # + exclusión, en ese orden. Fichas ya excluidas en el
+            # intento 1 (marcadas por review_exclusion.py) se vuelven a
+            # evaluar aquí sin cambiar su resultado -- la clasificación
+            # es puramente determinista sobre paper_type/task_type, así
+            # que reclasificar una ficha ya excluida es un no-op seguro.
+            exclusion_policy_final = dict(
+                signature_policy.get("extraction_policy", {})
+            )
+            exclusion_result_final = apply_review_exclusion_policy(
+                cards,
+                exclude_reviews=bool(exclusion_policy_final.get("exclude_reviews", False)),
+                created_at=self.dependencies.now_factory(),
+            )
+            cards = exclusion_result_final["cards"]
+            review_exclusion_audit_rows.extend(
+                exclusion_result_final["audit_rows"]
+            )
+            if exclusion_result_final["num_excluded"]:
+                kb_should_recreate = True
+                self.dependencies.save_jsonl(
+                    cards,
+                    paths["CARDS_JSONL_PATH"],
                 )
 
             kb_csv_exists = Path(
@@ -1196,6 +1244,70 @@ class ExtractionAgent:
                     cards_need_classification
                 ),
                 "kb_status": kb_status,
+            })
+
+            # Problema 2: summary/quality se (re)construyen AQUÍ,
+            # después de TODAS las mutaciones finales de la ficha
+            # (repair de extracción, title repair, clasificación de
+            # relevancia, exclusión de reviews) -- reflejan exactamente
+            # las fichas finales committed en scientific_cards.jsonl,
+            # nunca una versión intermedia desfasada.
+            summary_rows = [
+                build_summary_row(card) for card in cards
+            ]
+            quality_rows = [
+                self._quality_row(card) for card in cards
+            ]
+            self.dependencies.save_dataframe(
+                pd.DataFrame(summary_rows, columns=SUMMARY_COLUMNS),
+                paths["CARDS_SUMMARY_CSV_PATH"],
+            )
+            self.dependencies.save_dataframe(
+                pd.DataFrame(quality_rows, columns=QUALITY_COLUMNS),
+                paths["CARDS_QUALITY_CSV_PATH"],
+            )
+
+            # Registro auditable de exclusión (fail-closed, nunca
+            # silencioso): source_filename, tipo detectado, motivo y
+            # regla de policy aplicada. Una ficha puede evaluarse en
+            # más de un punto del flujo (intento 1 y este bloque
+            # final) -- se conserva solo la evaluación MÁS RECIENTE por
+            # source_filename (el estado definitivo), nunca duplicados
+            # de la misma ficha.
+            deduplicated_audit_rows: dict[str, dict[str, Any]] = {}
+            for row in review_exclusion_audit_rows:
+                deduplicated_audit_rows[str(row.get("source_filename", ""))] = row
+            save_dataframe_even_if_empty(
+                list(deduplicated_audit_rows.values()),
+                paths["CARDS_REVIEW_EXCLUSION_AUDIT_CSV_PATH"],
+                EXCLUSION_AUDIT_COLUMNS,
+            )
+
+            papers_processed = len(cards)
+            papers_excluded_by_review_policy = sum(
+                1 for card in cards if is_review_excluded(card)
+            )
+            papers_excluded_total = sum(
+                1 for card in cards
+                if card.get("include_in_state_of_art") is False
+            )
+            papers_included = papers_processed - papers_excluded_total
+            metrics["scientific"].update({
+                "papers_processed": int(papers_processed),
+                "papers_included": int(papers_included),
+                "papers_excluded": int(papers_excluded_total),
+                "papers_excluded_by_review_policy": int(
+                    papers_excluded_by_review_policy
+                ),
+                "papers_excluded_other_reasons": int(
+                    papers_excluded_total - papers_excluded_by_review_policy
+                ),
+                "papers_excluded_uncertain_review_classification": int(
+                    sum(
+                        1 for row in review_exclusion_audit_rows
+                        if str(row.get("action")) == "UNCERTAIN"
+                    )
+                ),
             })
 
             # Ensure the primary card/error/trace artifacts exist before the
@@ -1588,18 +1700,35 @@ class ExtractionAgent:
         missing = missing_critical_fields(card)
         row["missing_fields"] = missing
         row["num_missing_fields"] = len(missing)
+        # Campo interno, NUNCA persistido en el CSV (build_quality_row
+        # ya fija sus propias claves y el DataFrame final se construye
+        # con columns=QUALITY_COLUMNS explícito, que no lo incluye) --
+        # permite que _critical_field_coverage excluya del cálculo las
+        # fichas marcadas por review_exclusion.py sin necesitar
+        # recorrer `cards` de nuevo ni acoplar ambos módulos más de lo
+        # necesario.
+        row["_excluded_by_policy_rule"] = is_review_excluded(card)
         return row
 
     @staticmethod
     def _critical_field_coverage(
         quality_rows: Sequence[Mapping[str, Any]],
     ) -> float:
-        if not quality_rows:
+        # Fichas excluidas de forma determinista y auditable (reviews
+        # bajo policy.exclude_reviews) nunca penalizan la cobertura de
+        # campos críticos -- carecer de methods_or_models/evaluation_
+        # metrics/main_results en una review excluida no es un defecto
+        # de extracción, así que no debe empujar el gate hacia NEEDS_
+        # REVISION/HALT_STAGE.
+        included_rows = [
+            row for row in quality_rows if not row.get("_excluded_by_policy_rule")
+        ]
+        if not included_rows:
             return 0.0
         required = max(len(CARD_REQUIRED_FIELDS), 1)
         covered = [
             max(0.0, 1.0 - (float(row.get("num_missing_fields", 0)) / required))
-            for row in quality_rows
+            for row in included_rows
         ]
         return sum(covered) / len(covered)
 

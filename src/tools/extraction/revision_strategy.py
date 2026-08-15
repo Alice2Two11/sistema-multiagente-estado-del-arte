@@ -11,6 +11,7 @@ from collections import defaultdict
 from typing import Any, Mapping, Sequence
 
 from .card_validation import CARD_REQUIRED_FIELDS, build_quality_row
+from .review_exclusion import is_review_excluded
 
 
 REVISION_PLAN_COLUMNS = [
@@ -131,6 +132,17 @@ def build_revision_plan(
 
     for card in cards:
         source = str(card.get("source_filename", ""))
+
+        # Ficha excluida de forma determinista y auditable (ver
+        # review_exclusion.py) -- nunca participa en el plan de
+        # revisión: no se le exige methods_or_models/evaluation_
+        # metrics/main_results, porque una review excluida por policy
+        # no debe bloquear Stage 03 por carecer de resultados
+        # empíricos que nunca tuvo. La ficha en sí no se toca aquí --
+        # solo se salta del plan.
+        if is_review_excluded(card):
+            continue
+
         invalid_title = is_invalid_title(card)
         missing_fields = missing_critical_fields(card)
         evidence_missing = not bool(card.get("evidence"))

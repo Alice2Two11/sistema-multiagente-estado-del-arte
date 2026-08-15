@@ -207,6 +207,10 @@ class ExtractionRuntimeConfiguration:
                 extraction_dir
                 / "scientific_cards_revision_plan.csv"
             ),
+            "CARDS_REVIEW_EXCLUSION_AUDIT_CSV_PATH": str(
+                extraction_dir
+                / "scientific_cards_review_exclusion_audit.csv"
+            ),
             "RETRIEVAL_TRACE_CSV_PATH": str(
                 extraction_dir
                 / "extraction_retrieval_trace.csv"
