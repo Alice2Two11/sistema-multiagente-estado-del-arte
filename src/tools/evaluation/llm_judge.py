@@ -19,7 +19,6 @@ from typing import Any, Callable
 from langchain_core.messages import HumanMessage
 
 from src.tools.evaluation.text_normalization import safe_str
-from src.utils.json_parsing import parse_json_safely as _parse_json_safely
 
 PROMPT_VERSION = "v5_rubric_reference_comparison_strict_json"
 
@@ -194,7 +193,7 @@ def validate_judge_result(result: Any) -> list[str]:
             if len(evidence) > 3:
                 errors.append(f"{criterion}:too_many_evidence_items")
             for evidence_item in evidence:
-                if len(safe_str(evidence_item).split()) > 20:
+                if len(safe_str(evidence_item).split()) > EVIDENCE_ITEM_MAX_WORDS:
                     errors.append(f"{criterion}:evidence_item_over_20_words")
 
     for list_field in ["strengths", "organization_differences", "missing_topics_or_omissions"]:
@@ -221,19 +220,130 @@ def validate_judge_result(result: Any) -> list[str]:
     return errors
 
 
-parse_json_safely = _parse_json_safely
-"""Extrae JSON aunque la respuesta venga envuelta en un bloque Markdown.
+def parse_json_safely(text: Any) -> Any:
+    """Extrae JSON aunque la respuesta venga envuelta en un bloque Markdown.
+    Copia literal de notebook 08, celda 1."""
 
-Reexportada tal cual desde ``src.utils.json_parsing`` (utilidad
-neutral, sin dependencia hacia ningún dominio) -- es la MISMA función,
-no una copia ni un wrapper, para que no exista ninguna duplicación de
-lógica. Ahora también reutilizada por
-``src/adapters/draft_writing_runtime.py`` (Agent06) sin que eso cree
-una dependencia arquitectónica hacia ``src.tools.evaluation``.
-Cualquier código que la importe desde aquí (``from src.tools.
-evaluation.llm_judge import parse_json_safely``) sigue funcionando sin
-cambios -- semántica y comportamiento idénticos, copia literal de
-notebook 08, celda 1."""
+    if isinstance(text, (dict, list)):
+        return text
+
+    value = str(text).strip()
+    value = re.sub(r"^\s*```(?:json)?\s*", "", value, flags=re.IGNORECASE)
+    value = re.sub(r"\s*```\s*$", "", value)
+    value = value.strip()
+
+    try:
+        return json.loads(value)
+    except json.JSONDecodeError:
+        pass
+
+    decoder = json.JSONDecoder()
+    for index, character in enumerate(value):
+        if character not in "{[":
+            continue
+        try:
+            parsed, _ = decoder.raw_decode(value[index:])
+            return parsed
+        except json.JSONDecodeError:
+            continue
+
+    raise ValueError("La respuesta del LLM no contiene JSON válido.")
+
+
+EVIDENCE_ITEM_MAX_WORDS = 20
+"""Mismo límite que ya exige el prompt (regla 5, build_judge_prompt) y
+valida validate_judge_result (evidence_item_over_20_words) -- una sola
+constante para no duplicar el número mágico 20 en dos lugares."""
+
+
+def evidence_length_violations(
+    parsed: Any, max_words: int = EVIDENCE_ITEM_MAX_WORDS,
+) -> list[dict[str, Any]]:
+    """Recalcula, a partir del payload ya parseado, cada elemento de
+    ``evidence_from_generated`` que excede ``max_words`` -- una entrada
+    estructurada por violación, en el mismo orden posicional en que
+    ``validate_judge_result`` las detecta (una entrada por elemento
+    sobrante, nunca deduplicada por criterio: si dos elementos del
+    mismo criterio exceden el límite, produce dos violaciones).
+
+    NUNCA modifica ``parsed`` ni ningún elemento de evidencia -- solo
+    lee y reporta. Cada entrada trae ``criterion``,
+    ``evidence_item_index`` (posición dentro de la lista de ese
+    criterio), ``actual_word_count``, ``max_word_count`` y un
+    ``message`` en español listo para inyectar en el prompt de retry,
+    pidiendo reformulación (nunca recorte mecánico) para preservar el
+    significado."""
+
+    violations: list[dict[str, Any]] = []
+    if not isinstance(parsed, dict):
+        return violations
+    scores = parsed.get("scores")
+    if not isinstance(scores, dict):
+        return violations
+
+    for criterion in JUDGE_CRITERIA:
+        item = scores.get(criterion)
+        if not isinstance(item, dict):
+            continue
+        evidence = item.get("evidence_from_generated")
+        if not isinstance(evidence, list):
+            continue
+        for index, evidence_item in enumerate(evidence):
+            text = safe_str(evidence_item)
+            count = len(text.split())
+            if count > max_words:
+                violations.append({
+                    "criterion": criterion,
+                    "evidence_item_index": index,
+                    "actual_word_count": count,
+                    "max_word_count": max_words,
+                    "evidence_item_text": text,
+                    "message": (
+                        f"{criterion}: evidence_from_generated[{index}] tiene "
+                        f"{count} palabras; máximo permitido = {max_words}. "
+                        "Reformula ese elemento conservando su significado."
+                    ),
+                })
+    return violations
+
+
+def build_retry_feedback(
+    parsed: Any, errors: list[str], max_words: int = EVIDENCE_ITEM_MAX_WORDS,
+) -> list[str]:
+    """Construye el feedback que recibe el SIGUIENTE intento --
+    reemplaza cada entrada de ``errors`` con forma
+    ``"{criterion}:evidence_item_over_20_words"`` por su mensaje
+    estructurado y específico (ubicación + conteo exacto, ver
+    ``evidence_length_violations``); cualquier OTRO código de error
+    (score inválido, justificación vacía, estructura, etc.) se
+    conserva TAL CUAL, sin ningún cambio -- ``error_code`` estable,
+    mismo comportamiento histórico fuera de este caso concreto.
+
+    Nunca trunca ni reformula nada por sí misma -- solo construye el
+    texto que le PIDE al LLM que reformule, con la información exacta
+    que antes le faltaba (qué elemento, cuántas palabras, cuál límite).
+    Si hay más entradas de error para un criterio que violaciones
+    detectadas (no debería ocurrir en la práctica), el código original
+    se conserva como respaldo en vez de perder la señal de error."""
+
+    violations = evidence_length_violations(parsed, max_words)
+    messages_by_criterion: dict[str, list[str]] = {}
+    for violation in violations:
+        messages_by_criterion.setdefault(violation["criterion"], []).append(violation["message"])
+
+    consumed = {criterion: 0 for criterion in messages_by_criterion}
+    feedback: list[str] = []
+    for err in errors:
+        if str(err).endswith(":evidence_item_over_20_words"):
+            criterion = str(err).split(":", 1)[0]
+            available = messages_by_criterion.get(criterion, [])
+            position = consumed.get(criterion, 0)
+            if position < len(available):
+                feedback.append(available[position])
+                consumed[criterion] = position + 1
+                continue
+        feedback.append(err)
+    return feedback
 
 
 def run_llm_judge(
@@ -257,9 +367,14 @@ def run_llm_judge(
     ``json_parse_error``/errores de validación se acumulan en
     ``previous_errors`` y se inyectan en el siguiente prompt, tal cual.
 
-    Devuelve ``{"result": dict, "raw_attempts": list[str], "judge_mode": "new"}``
-    (persistencia de ``attempt_{n}.txt``/JSON/manifest queda fuera de este
-    módulo).
+    Devuelve ``{"result": dict, "raw_attempts": list[str], "attempt_errors":
+    list[list[str]], "judge_mode": "new"}`` -- ``attempt_errors[i]`` son los
+    códigos de error ESTABLES (``validate_judge_result``, sin enriquecer)
+    del intento ``i``, para auditoría; el feedback enriquecido (ver
+    ``build_retry_feedback``) solo se usa para construir el prompt del
+    siguiente intento, nunca sustituye el registro de auditoría.
+    (Persistencia de ``attempt_{n}.txt``/JSON/manifest queda fuera de este
+    módulo.)
     """
 
     generated_judge_text, generated_truncated = balanced_excerpt(
@@ -272,6 +387,7 @@ def run_llm_judge(
     previous_errors: list[str] = []
     llm_judge_result = None
     raw_attempts: list[str] = []
+    attempt_errors: list[list[str]] = []
 
     for _attempt in range(1, max_attempts + 1):
         prompt = build_judge_prompt(
@@ -293,13 +409,24 @@ def run_llm_judge(
             parsed = parse_json_safely_fn(raw_text)
         except Exception as error:
             previous_errors = [f"json_parse_error:{error}"]
+            attempt_errors.append(list(previous_errors))
             continue
 
         errors = validate_judge_result(parsed)
+        attempt_errors.append(list(errors))
         if not errors:
             llm_judge_result = parsed
             break
-        previous_errors = errors
+
+        # Feedback estructurado, ANTES de reintentar: cada violación de
+        # longitud se reemplaza por su ubicación+conteo exactos (ver
+        # build_retry_feedback) -- nunca se trunca ni se reformula nada
+        # aquí, solo se construye el texto que le pide al LLM que
+        # reformule conservando el significado. Cualquier otro tipo de
+        # error (mezclado o no con violaciones de longitud) se conserva
+        # tal cual, sin ningún atajo de aceptación -- el flujo de retry
+        # sigue siendo el único camino, nunca hay repair silencioso.
+        previous_errors = build_retry_feedback(parsed, errors)
 
     if llm_judge_result is None:
         raise ValueError(
@@ -310,6 +437,7 @@ def run_llm_judge(
     return {
         "result": llm_judge_result,
         "raw_attempts": raw_attempts,
+        "attempt_errors": attempt_errors,
         "judge_mode": "new",
         "generated_excerpt_truncated": generated_truncated,
         "ground_truth_excerpt_truncated": ground_truth_truncated,
