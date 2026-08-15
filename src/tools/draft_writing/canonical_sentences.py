@@ -50,6 +50,7 @@ from .claim_identity import (
     resolve_claim_identity,
 )
 from .artifacts import write_raw_section_output, write_raw_section_validation
+from .validation import compute_unsupported_numeric_values
 
 # Vocabulario de errores de esta fase -- códigos EXACTOS pedidos,
 # usados como prefijo de cada entrada de "errors" (algunas llevan un
@@ -241,6 +242,122 @@ def resolve_evidence_ids(
             continue
         citations.append(citation_string(pair))
     return citations, errors
+
+
+def _v2_evidence_pairs_from_citations(supporting_citations: Sequence[str]) -> list[tuple[str, str]]:
+    """Extrae los pares ``(source_filename, chunk_id)`` de una lista de
+    citas YA resueltas al formato histórico exacto (nunca escritas por
+    el LLM en el contrato V2 -- ver ``resolve_evidence_ids``). Reutiliza
+    ``CITATION_RE`` tal cual, sin duplicar su patrón."""
+
+    pairs = []
+    for value in supporting_citations or []:
+        match = CITATION_RE.fullmatch(str(value).strip())
+        if match:
+            pairs.append((match.group(1).strip(), match.group(2).strip()))
+    return pairs
+
+
+def v2_numeric_support_errors(
+    sentences: Sequence[Mapping[str, Any]],
+    evidence: Sequence[Mapping[str, Any]],
+) -> list[str]:
+    """Verificación de soporte numérico para el contrato V2 --
+    reutiliza EXCLUSIVAMENTE la función pura compartida ``compute_
+    unsupported_numeric_values`` (``validation.py``), llamada con
+    ``allow_section_evidence_fallback=False``: un número solo se
+    considera soportado si aparece en el texto de alguna de las citas
+    PROPIAS de esa oración -- nunca en otra evidencia recuperada para
+    la sección pero no citada por esa oración. Esta es
+    deliberadamente MÁS ESTRICTA que la semántica histórica de legacy
+    (que sí perdona por evidencia de sección completa): V2 debe
+    exigir la MISMA regla que después lo juzga ``build_draft_reports``
+    (que nunca aplicó ese perdón), para que una sección aceptada
+    localmente por V2 nunca vuelva a fallar en el reporte global. V2
+    NUNCA importa ni depende del resto de ``validate_generated_
+    section`` (matching exacto de claim==oración, citation_errors,
+    etc.), que pertenece al contrato legacy y no aplica aquí.
+
+    Opera sobre ``sentences[]`` YA validado por ``validate_and_parse_
+    sentences_v2`` (``text`` + ``supporting_citations`` ya resueltas
+    desde evidence handles) -- se llama ANTES de materializar/aceptar
+    la sección. Devuelve la lista deduplicada y ordenada de
+    ``"UNSUPPORTED_NUMERIC_VALUE:<valor>"`` encontrados en cualquier
+    oración (vacía si todo está soportado)."""
+
+    evidence_lookup = {(row["source_filename"], row["chunk_id"]): row.get("text", "") for row in evidence}
+    errors: list[str] = []
+    for sentence in sentences:
+        pairs = _v2_evidence_pairs_from_citations(sentence.get("supporting_citations") or [])
+        errors.extend(
+            compute_unsupported_numeric_values(
+                str(sentence.get("text", "")), pairs, evidence_lookup, set(),
+                allow_section_evidence_fallback=False,
+            )
+        )
+    return sorted(set(errors))
+
+
+def v2_numeric_salvage(
+    sentences: Sequence[Mapping[str, Any]],
+    evidence: Sequence[Mapping[str, Any]],
+) -> tuple[list[dict[str, Any]], list[str], list[str]] | None:
+    """Salvage numérico determinista NATIVO de V2 -- análogo en
+    intención al salvage legacy (``DraftWritingAgent._salvage_numeric_
+    only_section``), pero opera sobre ``sentences[]`` (la lista YA
+    validada, pre-materialización) en vez de sobre ``draft_text``/
+    ``claims`` post-materialización, y NUNCA llama a ``normalize_
+    generated_section`` (exact-matching legacy, no aplica al contrato
+    V2). Ningún valor se reemplaza, infiere o redondea -- se eliminan
+    oraciones COMPLETAS que contienen un valor no soportado, igual que
+    legacy.
+
+    Usa la MISMA regla estricta que ``v2_numeric_support_errors``
+    (``allow_section_evidence_fallback=False``): una oración se
+    elimina si su número no aparece en el texto de sus propias citas
+    -- nunca se conserva porque el valor aparezca en otra evidencia
+    recuperada para la sección pero no citada por esa oración. Esto
+    evita exactamente la inconsistencia observada en Exp07: un número
+    "perdonado" localmente que luego seguía fallando en ``build_
+    draft_reports`` (que nunca aplicó ese perdón).
+
+    Fail-closed: si ninguna oración se elimina, o si TODAS se
+    eliminarían (la sección quedaría vacía), devuelve ``None`` -- el
+    llamador debe entonces tratarlo como fallo de este intento (retry
+    LLM), nunca aceptar una sección vacía.
+
+    Devuelve ``(kept_sentences, removed_sentence_texts,
+    removed_values)`` -- ``kept_sentences`` conserva el shape exacto de
+    cada elemento de ``sentences[]`` tal cual (listo para volver a
+    pasar por ``materialize_initial_section_v2``, que reasigna
+    ``sentence_id``/``claim_id``/identidad limpiamente y de forma
+    contigua sobre el subconjunto restante -- nunca reaparece ningún
+    campo técnico generado por el LLM, porque no se toca nada del LLM
+    en este paso, solo se filtra la lista ya parseada)."""
+
+    evidence_lookup = {(row["source_filename"], row["chunk_id"]): row.get("text", "") for row in evidence}
+
+    kept_sentences: list[dict[str, Any]] = []
+    removed_sentence_texts: list[str] = []
+    removed_values: list[str] = []
+
+    for sentence in sentences:
+        pairs = _v2_evidence_pairs_from_citations(sentence.get("supporting_citations") or [])
+        text = str(sentence.get("text", ""))
+        sentence_errors = compute_unsupported_numeric_values(
+            text, pairs, evidence_lookup, set(), allow_section_evidence_fallback=False,
+        )
+        if sentence_errors:
+            removed_sentence_texts.append(text)
+            prefix = "UNSUPPORTED_NUMERIC_VALUE:"
+            removed_values.extend(err[len(prefix):] for err in sentence_errors if err.startswith(prefix))
+        else:
+            kept_sentences.append(dict(sentence))
+
+    if not removed_sentence_texts or not kept_sentences:
+        return None
+
+    return kept_sentences, removed_sentence_texts, sorted(set(removed_values))
 
 
 def validate_and_parse_sentences_v2(
@@ -700,22 +817,87 @@ def generate_section_canonical_v2(
         })
 
         if parse_result["validation_ok"]:
-            materialized = materialize_initial_section_v2(parse_result["sentences"], sid)
-            return {
-                "section_id": sid,
-                "section_title": section_title,
-                "draft_text": materialized["draft_text"],
-                "claims": materialized["claims"],
-                "section_validation": {"validation_ok": True, "errors": []},
-                "generation_attempt": attempt,
-                "_v2_execution": {
-                    "llm_calls": llm_calls_made,
-                    "validation_calls": validation_calls_made,
-                    "attempt_logs": attempt_logs_v2,
-                    "failed": False,
-                    "last_errors": [],
-                },
-            }
+            numeric_errors = v2_numeric_support_errors(parse_result["sentences"], evidence)
+
+            if not numeric_errors:
+                materialized = materialize_initial_section_v2(parse_result["sentences"], sid)
+                return {
+                    "section_id": sid,
+                    "section_title": section_title,
+                    "draft_text": materialized["draft_text"],
+                    "claims": materialized["claims"],
+                    "section_validation": {"validation_ok": True, "errors": []},
+                    "generation_attempt": attempt,
+                    "_v2_execution": {
+                        "llm_calls": llm_calls_made,
+                        "validation_calls": validation_calls_made,
+                        "attempt_logs": attempt_logs_v2,
+                        "failed": False,
+                        "last_errors": [],
+                    },
+                }
+
+            # V2 NUNCA acepta una sección con valores numéricos no
+            # soportados -- antes de gastar otro intento LLM, se prueba
+            # el salvage determinista nativo de V2 (v2_numeric_salvage,
+            # análogo en intención al de legacy pero sin acoplarse a su
+            # exact-matching). Fail-closed en cada paso: si el salvage
+            # no es posible, o si tras aplicarlo persiste algún error
+            # numérico, esta sección NUNCA se acepta con validation_ok=
+            # True -- los códigos entran al siguiente retry LLM, igual
+            # que cualquier otro error V2.
+            salvage = v2_numeric_salvage(parse_result["sentences"], evidence)
+            if salvage is not None:
+                kept_sentences, removed_sentence_texts, removed_values = salvage
+                post_salvage_errors = v2_numeric_support_errors(kept_sentences, evidence)
+
+                if not post_salvage_errors:
+                    materialized = materialize_initial_section_v2(kept_sentences, sid)
+                    salvage_tag = f"numeric_salvage_from_{attempt}"
+                    salvage_payload = {
+                        "section_id": sid,
+                        "generation_attempt": salvage_tag,
+                        "contract": "canonical_sentences_v2",
+                        "mode": "deterministic_numeric_sentence_salvage",
+                        "salvaged_from_attempt": attempt,
+                        "validation_ok": True,
+                        "validation_errors": [],
+                        "removed_unsupported_numeric_values": removed_values,
+                        "removed_sentences": removed_sentence_texts,
+                    }
+                    if raw_dir is not None:
+                        write_raw_section_validation(raw_dir, sid, salvage_tag, salvage_payload)
+                    attempt_logs_v2.append({
+                        "attempt": salvage_tag,
+                        "contract": "canonical_sentences_v2",
+                        "mode": "deterministic_numeric_sentence_salvage",
+                        "salvaged_from_attempt": attempt,
+                        "validation": salvage_payload,
+                    })
+                    return {
+                        "section_id": sid,
+                        "section_title": section_title,
+                        "draft_text": materialized["draft_text"],
+                        "claims": materialized["claims"],
+                        "section_validation": {"validation_ok": True, "errors": []},
+                        "generation_attempt": salvage_tag,
+                        "_v2_execution": {
+                            "llm_calls": llm_calls_made,
+                            "validation_calls": validation_calls_made,
+                            "attempt_logs": attempt_logs_v2,
+                            "failed": False,
+                            "last_errors": [],
+                        },
+                    }
+
+            # Salvage no aplicable (fail-closed: eliminaría toda la
+            # sección o no eliminaría nada) o no logró producir una
+            # versión sin errores numéricos -- se registra como fallo
+            # de ESTE intento, y los códigos numéricos entran al
+            # siguiente retry LLM tal cual, nunca se aceptan en
+            # silencio.
+            current_errors = numeric_errors
+            continue
 
         # Fail-closed: nunca se repara, nunca se filtra, nunca se
         # convierte al formato legacy. Los códigos reales entran al

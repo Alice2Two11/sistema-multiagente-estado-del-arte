@@ -5,6 +5,66 @@ from .normalization import CITATION_RE, split_sentences_preserving_citations, is
 from .prompting import assign_section_budgets
 
 
+def compute_unsupported_numeric_values(
+    text, citation_pairs, evidence_lookup, section_evidence_tokens, *,
+    allow_section_evidence_fallback=True,
+):
+    """Función PURA y compartida: para un texto (oración o claim) y los
+    pares de cita asociados a él, calcula qué valores numéricos NO
+    están soportados por el texto de sus propias citas
+    (``number_exists_in_text``).
+
+    ``allow_section_evidence_fallback`` (default ``True``, preserva
+    exactamente la semántica histórica de legacy): cuando es ``True``,
+    un número también se considera soportado si aparece en el conjunto
+    de tokens numéricos canónicos de TODA la evidencia de la sección
+    (``_canonical_numeric_tokens``), no solo en las citas propias del
+    texto -- perdón por soporte indirecto. ``canonical_sentences_v2``
+    llama a esta función con ``allow_section_evidence_fallback=False``
+    explícitamente: V2 exige la MISMA regla que después lo juzga
+    ``build_draft_reports`` (soportado únicamente si aparece en alguno
+    de los ``supporting_citations`` propios del claim) -- nunca el
+    perdón por evidencia recuperada pero no citada, que produciría
+    exactamente la inconsistencia observada en Exp07 (``FOUND_IN_
+    OTHER_RETRIEVED_EVIDENCE`` aceptado localmente por V2 pero luego
+    rechazado por el reporte global, que nunca aplicó ese perdón).
+
+    Esta función es una extracción, no una reimplementación: legacy la
+    consume internamente sin cambio de comportamiento (ver más abajo),
+    y es la única pieza que ``canonical_sentences_v2`` importa de este
+    módulo -- nunca el resto de la lógica legacy (matching exacto de
+    claim==oración, citation_errors, etc.), que no aplica al contrato
+    V2.
+
+    Devuelve una lista de ``"UNSUPPORTED_NUMERIC_VALUE:<valor>"`` (sin
+    deduplicar ni ordenar -- eso es responsabilidad del llamador, igual
+    que antes de esta extracción)."""
+
+    errors = []
+    for number in re.findall(r"(?<!\w)[+-]?\d+(?:[.,]\d+)?%?", text):
+        if any(number_exists_in_text(number, evidence_lookup.get(pair, "")) for pair in citation_pairs):
+            continue
+        if allow_section_evidence_fallback and (_canonical_numeric_tokens(number) & section_evidence_tokens):
+            continue
+        errors.append(f"UNSUPPORTED_NUMERIC_VALUE:{number}")
+    return errors
+
+
+def build_section_evidence_numeric_tokens(evidence):
+    """Función PURA y compartida: conjunto de tokens numéricos
+    canónicos presentes en CUALQUIER fila de evidencia de la sección
+    (no solo la citada por una oración específica) -- MISMA semántica
+    histórica exacta que ya construía ``validate_generated_section``
+    inline antes de esta extracción."""
+
+    tokens = set()
+    for row in evidence or []:
+        if not isinstance(row, dict):
+            continue
+        tokens.update(_canonical_numeric_tokens(row.get("text") or row.get("chunk_text") or ""))
+    return tokens
+
+
 def count_words(text):
     return len(re.findall(r"\b[\wáéíóúüñ]+\b", safe_str(text), flags=re.IGNORECASE))
 
@@ -90,9 +150,9 @@ def validate_generated_section(generated, section, evidence):
                 claim_pairs.append((match.group(1).strip(), match.group(2).strip()))
         if set(claim_pairs) != set(pairs):
             claim_errors.append("claim_citation_mismatch")
-        for number in re.findall(r"(?<!\w)[+-]?\d+(?:[.,]\d+)?%?", normalize_claim_text(sentence)):
-            if not any(number_exists_in_text(number, allowed.get(pair, "")) for pair in pairs):
-                numeric_errors.append(f"UNSUPPORTED_NUMERIC_VALUE:{number}")
+        numeric_errors.extend(
+            compute_unsupported_numeric_values(normalize_claim_text(sentence), pairs, allowed, set())
+        )
     all_errors = errors + citation_errors + claim_errors
     return {
         "validation_ok": not all_errors and not numeric_errors,
@@ -253,19 +313,7 @@ def validate_generated_section(
     if not numeric_errors:
         return result
 
-    evidence_tokens = set()
-
-    for row in evidence or []:
-        if not isinstance(row, dict):
-            continue
-
-        evidence_tokens.update(
-            _canonical_numeric_tokens(
-                row.get("text")
-                or row.get("chunk_text")
-                or ""
-            )
-        )
+    evidence_tokens = build_section_evidence_numeric_tokens(evidence)
 
     retained_numeric_errors = []
 
