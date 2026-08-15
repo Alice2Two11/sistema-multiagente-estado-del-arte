@@ -123,6 +123,7 @@ _DEFAULT_EXTRACTION_POLICY = {
     "force_rebuild": False,
     "max_attempts": 2,
     "max_retrieval_rounds": 2,
+    "exclude_reviews": False,
     "thresholds": {
         "approval": {"critical_field_coverage": 0.92},
         "minimum_usable_quality": {"critical_field_coverage": 0.80},
@@ -460,6 +461,12 @@ def _validate_policy(
         _boolean(
             policy["force_rebuild"],
             "extraction_policy.force_rebuild",
+        )
+    )
+    policy["exclude_reviews"] = (
+        _boolean(
+            policy.get("exclude_reviews", False),
+            "extraction_policy.exclude_reviews",
         )
     )
     policy["max_attempts"] = (
