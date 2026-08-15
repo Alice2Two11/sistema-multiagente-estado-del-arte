@@ -35,6 +35,43 @@ from src.config.thematic_analysis_policy_config import get_thematic_analysis_pol
 from src.agents.thematic_analysis_agent import ThematicAnalysisAgent
 
 
+def resolve_thematic_pipeline_state_path(project_dir: str | Path, experiment_id: str) -> Path:
+    """Resuelve la ruta REAL de ``pipeline_state.json`` para este
+    experimento -- réplica exacta, en Stage 04, del mismo patrón que
+    ``resolve_pipeline_state_path`` (Stage 06, ``draft_writing_
+    runtime.py``): la ruta canónica (``05_outputs/00_orchestrator_
+    planner/pipeline_state.json``, la que escribe el orquestador real
+    vía ``ensure_pipeline_state``) tiene prioridad; si no existe pero
+    hay EXACTAMENTE un ``pipeline_state.json`` en cualquier otro lugar
+    del directorio del experimento (esquema de directorio legacy de
+    una migración anterior), se usa ese -- nunca se crea ni se
+    sobrescribe nada aquí, es una función de solo lectura.
+
+    A diferencia de ``resolve_pipeline_state_path`` (Stage 06), esta
+    NUNCA levanta si no existe ningún candidato: ``load_thematic_
+    configuration`` la llama para construir la configuración de
+    CUALQUIER intento, y en el intento 1 es legítimo que el archivo
+    todavía no exista (el orquestador aún no comprometió nada). En ese
+    caso se devuelve la ruta canónica por defecto -- es
+    responsabilidad exclusiva de ``_previous_attempt_from_state``
+    (que solo se invoca en el intento 2 en adelante) decidir si su
+    ausencia en ESE punto es un error real."""
+
+    root = Path(project_dir).resolve()
+    experiment_dir = root / experiment_id
+    canonical = (
+        experiment_dir / "05_outputs" / "00_orchestrator_planner" / "pipeline_state.json"
+    )
+    if canonical.is_file():
+        return canonical
+    candidates = list(experiment_dir.rglob("pipeline_state.json"))
+    if len(candidates) == 1:
+        return candidates[0]
+    if not candidates:
+        return canonical
+    raise RuntimeError(f"pipeline_state.json ambiguo: {candidates}")
+
+
 def load_thematic_configuration(project_dir: str | Path, attempt_number: int = 1):
     root = Path(project_dir).resolve()
     active_path = root / "active_experiment.json"
@@ -61,7 +98,7 @@ def load_thematic_configuration(project_dir: str | Path, attempt_number: int = 1
         "model": active.get("openai_model", "gpt-4o-mini"),
         "policy": policy,
         "output_dir": thematic_dir,
-        "state_path": experiment_dir / "pipeline_state.json",
+        "state_path": resolve_thematic_pipeline_state_path(root, experiment_id),
         "paths": {
             "scientific_knowledge_base_csv": kb_dir / "scientific_knowledge_base.csv",
             "scientific_knowledge_base_jsonl": kb_dir / "scientific_knowledge_base.jsonl",
