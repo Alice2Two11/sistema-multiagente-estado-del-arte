@@ -11,7 +11,7 @@ from collections import defaultdict
 from typing import Any, Mapping, Sequence
 
 from .card_validation import CARD_REQUIRED_FIELDS, build_quality_row
-from .review_exclusion import is_review_excluded
+from .review_exclusion import is_review_excluded, is_unknown_document_type
 
 
 REVISION_PLAN_COLUMNS = [
@@ -21,6 +21,7 @@ REVISION_PLAN_COLUMNS = [
     "evidence_missing",
     "retrieved_unique_chunks",
     "primary_reason_code",
+    "underlying_reason_code",
     "recommended_strategy",
 ]
 
@@ -170,6 +171,28 @@ def build_revision_plan(
         else:
             continue
 
+        # Política general (multidominio, nunca depende de nombres de
+        # archivo/título/tarea científica concretos): una ficha con
+        # tipo documental UNKNOWN (ninguna señal -- ni document_type/
+        # paper_type, ni marcador bibliográfico de título -- ver
+        # review_exclusion.py) que ADEMÁS resulta inválida por
+        # cualquier motivo (aquí es donde SIEMPRE llega el caso: nunca
+        # se le "asume" review, así que el gate normal de campos
+        # críticos siempre se evalúa primero) se distingue con un
+        # reason_code explícito propio -- NUNCA se excluye
+        # silenciosamente, y sigue bloqueando exactamente igual que
+        # antes (retry/halt), pero la auditoría deja claro que la
+        # causa de fondo es "no sabemos si esto es una review o un
+        # paper primario", no simplemente "campos faltantes" -- la
+        # causa raíz original (missing fields, título inválido, etc.)
+        # se conserva en underlying_reason_code para no perder
+        # información. Una ficha con tipo documental CONOCIDO (KEEP
+        # confiable: paper_type/document_type explícito y distinto de
+        # review) sigue el camino histórico sin cambios.
+        underlying_reason = primary_reason
+        if is_unknown_document_type(card):
+            primary_reason = "DOCUMENT_TYPE_UNKNOWN_AND_CARD_INVALID"
+
         rows.append({
             "source_filename": source,
             "invalid_title": bool(invalid_title),
@@ -177,6 +200,7 @@ def build_revision_plan(
             "evidence_missing": bool(evidence_missing),
             "retrieved_unique_chunks": unique_chunks,
             "primary_reason_code": primary_reason,
+            "underlying_reason_code": underlying_reason,
             "recommended_strategy": strategy,
         })
 
