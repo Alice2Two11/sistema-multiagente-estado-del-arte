@@ -9,7 +9,10 @@ def _src(value):
     return ""
 
 
-def calculate_diagnostic_metrics(data, df, ref_counts):
+def calculate_diagnostic_metrics(
+    data, df, ref_counts, *,
+    min_sections=None, max_sections=None, enforce_section_count=None,
+):
     """Diagnostics that preserve the original representative-paper semantics.
 
     representative_papers are exemplars, not an exhaustive paper-to-theme assignment.
@@ -50,4 +53,17 @@ def calculate_diagnostic_metrics(data, df, ref_counts):
         "gap_source_validity_rate": 1.0,
         "invalid_record_rate": 0.0,
         "section_count": len(data.get("suggested_state_of_art_structure", [])),
+        "min_sections": min_sections,
+        "max_sections": max_sections,
+        "structure_too_short": (
+            min_sections is not None
+            and len(data.get("suggested_state_of_art_structure", [])) < int(min_sections)
+        ),
+        "structure_too_long": (
+            max_sections is not None
+            and len(data.get("suggested_state_of_art_structure", [])) > int(max_sections)
+        ),
+        "enforce_section_count": (
+            bool(enforce_section_count) if enforce_section_count is not None else None
+        ),
     }

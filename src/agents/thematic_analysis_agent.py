@@ -13,17 +13,30 @@ class ThematicAnalysisAgent:
             bundle,df,m03=validate_dependencies(agent_input); final,excluded=filter_corpus(df); final,qmeta,qwarn=integrate_quantitative_context(final,bundle)
             context=compact_for_thematic_analysis(final,int(agent_input.policy.get('max_field_chars',3500))); valid=set(final.source_filename.astype(str)); title_map=dict(zip(final.source_filename.astype(str),final.title.astype(str)))
             repair_plan=build_repair_plan(agent_input.previous_attempt.failure_reason_codes if agent_input.previous_attempt else ()) if agent_input.attempt_number==2 else None
-            prompt=self.dependencies.build_prompt(context,list(valid),title_map,repair_plan); raw=self.dependencies.invoke(prompt); llm_calls=1
+            min_s=agent_input.policy.get('min_sections'); max_s=agent_input.policy.get('max_sections')
+            enforce_section_count=bool(agent_input.policy.get('structure_policy',{}).get('enforce_section_count',False))
+            prompt=self.dependencies.build_prompt(context,list(valid),title_map,repair_plan,min_sections=min_s,max_sections=max_s,enforce_section_count=enforce_section_count); raw=self.dependencies.invoke(prompt); llm_calls=1
             payload=self.dependencies.parse(raw); raw_counts=inspect_thematic_payload(payload); data,schema_issues,alias_repairs=normalize_thematic_output(payload,return_repairs=True); data,deterministic_repairs=apply_deterministic_repairs(data,title_map,valid); repairs=alias_repairs+deterministic_repairs
             ref_codes,counts,_=validate_references(data,final); table_counts=thematic_table_counts(data); flattening_codes,consistency=validate_json_to_tables(raw_counts,table_counts); codes=[x['code'] for x in schema_issues]+ref_codes+flattening_codes
             if any(r.get('type')=='INVALID_REFERENCE_REMOVED' for r in repairs): codes.append('INVALID_REPRESENTATIVE_SOURCE')
             if not data['themes']: codes.append('EMPTY_THEMATIC_OUTPUT')
             if not data['research_gaps']: codes.append('EMPTY_THEMATIC_OUTPUT')
             if not data['comparative_dimensions']: codes.append('EMPTY_THEMATIC_OUTPUT')
-            min_s=agent_input.policy.get('min_sections'); max_s=agent_input.policy.get('max_sections'); sc=len(data['suggested_state_of_art_structure'])
-            if min_s is not None and sc<int(min_s): codes.append('STRUCTURE_TOO_SHORT')
-            if max_s is not None and sc>int(max_s): codes.append('STRUCTURE_TOO_LONG')
-            metrics=calculate_diagnostic_metrics(data,final,counts)
+            sc=len(data['suggested_state_of_art_structure'])
+            structure_too_short=min_s is not None and sc<int(min_s); structure_too_long=max_s is not None and sc>int(max_s)
+            # El conteo de secciones es orientativo por defecto (contrato
+            # estructural: la longitud en palabras, validada en etapas
+            # posteriores, es la restricción dura -- no el número de
+            # secciones). structure_too_short/long SIEMPRE se calculan como
+            # diagnóstico (ver calculate_diagnostic_metrics más abajo), pero
+            # solo entran a `codes` -- y por tanto a failure_reason_codes,
+            # classify_quality, build_repair_plan y validation_ok -- cuando
+            # structure_policy.enforce_section_count=True conserva
+            # exactamente el comportamiento histórico bloqueante.
+            if enforce_section_count:
+                if structure_too_short: codes.append('STRUCTURE_TOO_SHORT')
+                if structure_too_long: codes.append('STRUCTURE_TOO_LONG')
+            metrics=calculate_diagnostic_metrics(data,final,counts,min_sections=min_s,max_sections=max_s,enforce_section_count=enforce_section_count)
             if repair_plan and not repairs: codes.append('REPAIR_PLAN_NOT_APPLIED')
             codes=tuple(dict.fromkeys(codes)); quality,action=classify_quality(codes,agent_input.attempt_number,bool(agent_input.policy.get('manual_review_policy',{}).get('allowed',True)))
             validation={'validation_ok':not codes,'failure_reason_codes':list(codes),'metrics':metrics,'repairs':repairs,'repair_plan':repair_plan or [],'json_to_tables_consistency':consistency,**qmeta}

@@ -81,7 +81,7 @@ class T(unittest.TestCase):
  def test_empty_output(self):
   with self.assertRaises(ValueError):normalize_thematic_output({})
  def test_structure_short(self):
-  p=json.loads(json.dumps(self.payload));p['suggested_state_of_art_structure']=[];x=self.agent(p).execute(self.ai());self.assertIn('STRUCTURE_TOO_SHORT',x.failure_reason_codes)
+  p=json.loads(json.dumps(self.payload));p['suggested_state_of_art_structure']=[];a=self.ai();d=a.to_dict();d['policy']['structure_policy']={'enforce_section_count':True};x=self.agent(p).execute(AgentInput.from_dict(d));self.assertIn('STRUCTURE_TOO_SHORT',x.failure_reason_codes)
  def test_invalid_comparative_source(self):
   p=json.loads(json.dumps(self.payload));p['comparative_dimensions'][0]['relevant_sources']=['x.pdf'];x=self.agent(p).execute(self.ai());self.assertIn('INVALID_COMPARATIVE_SOURCE',x.failure_reason_codes)
  def test_quality_approved(self):self.assertEqual(self.agent().execute(self.ai()).quality_status.value,'APPROVED')
