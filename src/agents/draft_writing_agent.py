@@ -87,7 +87,26 @@ INSUFFICIENT_SUPPORTED_CONTENT_FOR_MIN_LENGTH = "INSUFFICIENT_SUPPORTED_CONTENT_
 LEGACY_VERSIONS = {
     "stage_version": "06_AGENTIC_V16_BEHAVIOR_PRESERVING",
     "rag_version": "legacy_chroma_then_csv_restricted_v1",
-    "validation_version": "legacy_notebook06_validation_v1",
+    # v2 (sufijo "_hard_word_range_configured_min_gate_soft_failure_
+    # length_repair"): el gate de longitud total del borrador cambió de
+    # contrato -- antes, global_length_valid podía aprobarse usando
+    # effective_min_total_words (rebajado silenciosamente por número de
+    # secciones source-free), permitiendo que un borrador muy por
+    # debajo de min_total_words configurado (ej. 1081 con
+    # configured_min=1300) se aprobara. Desde esta versión:
+    # configured_min_total_words/configured_max_total_words (los
+    # valores reales del generation_profile) son el único gate;
+    # incumplir el rango produce reason codes explícitos
+    # (TOTAL_WORD_COUNT_BELOW_MINIMUM/ABOVE_MAXIMUM/INSUFFICIENT_
+    # SUPPORTED_CONTENT_FOR_MIN_LENGTH) en vez de INVALID_DRAFT
+    # genérico, nunca una excepción técnica, y se intenta una
+    # reparación dirigida (src/tools/draft_writing/length_repair.py,
+    # exclusivamente dentro del contrato Evidence Handles V2) antes de
+    # agotar los intentos. Este es un cambio de CONTRATO real -- por
+    # eso participa en el fingerprint (ver _draft_signature) e invalida
+    # cualquier draft/manifest de 06 producido bajo una versión
+    # anterior, sin necesitar --force-rerun.
+    "validation_version": "legacy_notebook06_validation_v2_hard_word_range_configured_min_gate_soft_failure_length_repair",
     # Debe coincidir siempre con LEGACY_RUNTIME_VERSIONS en
     # src/adapters/draft_writing_runtime.py (duplicación preexistente
     # de estas constantes entre ambos archivos -- no introducida por
@@ -99,7 +118,26 @@ HYBRID_VERSIONS = {
     "rag_version": "hybrid_chroma_csv_rrf_balanced_v1",
     "quantitative_selection_version": "confirmed_literal_greedy_coverage_v1",
     "budget_version": "source_aware_exact_total_v1",
-    "validation_version": "legacy_notebook06_validation_v1",
+    # v2 (sufijo "_hard_word_range_configured_min_gate_soft_failure_
+    # length_repair"): el gate de longitud total del borrador cambió de
+    # contrato -- antes, global_length_valid podía aprobarse usando
+    # effective_min_total_words (rebajado silenciosamente por número de
+    # secciones source-free), permitiendo que un borrador muy por
+    # debajo de min_total_words configurado (ej. 1081 con
+    # configured_min=1300) se aprobara. Desde esta versión:
+    # configured_min_total_words/configured_max_total_words (los
+    # valores reales del generation_profile) son el único gate;
+    # incumplir el rango produce reason codes explícitos
+    # (TOTAL_WORD_COUNT_BELOW_MINIMUM/ABOVE_MAXIMUM/INSUFFICIENT_
+    # SUPPORTED_CONTENT_FOR_MIN_LENGTH) en vez de INVALID_DRAFT
+    # genérico, nunca una excepción técnica, y se intenta una
+    # reparación dirigida (src/tools/draft_writing/length_repair.py,
+    # exclusivamente dentro del contrato Evidence Handles V2) antes de
+    # agotar los intentos. Este es un cambio de CONTRATO real -- por
+    # eso participa en el fingerprint (ver _draft_signature) e invalida
+    # cualquier draft/manifest de 06 producido bajo una versión
+    # anterior, sin necesitar --force-rerun.
+    "validation_version": "legacy_notebook06_validation_v2_hard_word_range_configured_min_gate_soft_failure_length_repair",
     "normalization_version": "sentence_claim_exact_match_preserve_unmatched_v1_immediate_numeric_salvage_v2_discourse_connector_feedback_v3",
 }
 

@@ -443,7 +443,7 @@ class TestAgent06ContractualAgentIntegrationV17(unittest.TestCase):
         )
         self.assertEqual(
             manifest["versions"]["validation"],
-            "legacy_notebook06_validation_v1",
+            "legacy_notebook06_validation_v2_hard_word_range_configured_min_gate_soft_failure_length_repair",
         )
 
     def test_final_evidence_metadata_is_preserved_in_rag_artifact(self):
