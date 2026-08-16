@@ -1,17 +1,16 @@
 from __future__ import annotations
 from difflib import get_close_matches
 import re
+from src.tools.shared.section_source_requirement import section_is_source_free_organizational
 def as_list(v): return [] if v is None else (v if isinstance(v,list) else [v])
 def norm_text(v): return re.sub(r'\s+',' ',str(v or '').strip().lower())
-SECTION_ALLOW_TYPES={'introduccion','introducción','introduction','discusion','discusión','discussion','gaps','research_gaps','vacios','vacíos','cierre','closing','conclusion','conclusión','conclusiones','conclusions'}
-SECTION_ALLOW_TITLE_TOKENS=['introducción','introduccion','introduction','discusión','discusion','discussion','vacíos','vacios','gaps','conclusión','conclusion','conclusiones','conclusions','perspectivas','tendencias','cierre']
 def section_allows_empty_papers(sec):
  """Única definición de qué secciones pueden legítimamente no citar
- papers (introducción, discusión, conclusiones, vacíos/gaps, cierre) --
- importada tanto por la validación como por la reparación determinista,
- para que ambas coincidan siempre y nunca diverjan."""
- st=norm_text(sec.get('section_type')); title=norm_text(sec.get('section_title'))
- return st in SECTION_ALLOW_TYPES or any(x in title for x in SECTION_ALLOW_TITLE_TOKENS)
+ papers -- reutiliza classify_section_source_requirement (``src/
+ tools/shared/section_source_requirement.py``), la MISMA fuente que
+ consume Stage 06 para su gate de evidencia, para que ambas etapas
+ nunca puedan divergir."""
+ return section_is_source_free_organizational(sec)
 def repair_outline_sources(outline,valid_sources,source_to_title,title_to_source,cutoff=0.55):
  repairs=[]; unresolved=[]; titles=list(title_to_source)
  for sec in as_list(outline.get('sections',[])):

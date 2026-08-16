@@ -3,6 +3,7 @@ import re
 from .retrieval import safe_str
 from .normalization import CITATION_RE, split_sentences_preserving_citations, is_substantive_sentence, normalize_claim_text
 from .prompting import assign_section_budgets
+from src.tools.shared.section_source_requirement import section_is_source_free_organizational
 
 
 def compute_unsupported_numeric_values(
@@ -166,8 +167,12 @@ def validate_generated_section(generated, section, evidence):
 
 
 def section_allows_no_sources(section):
-    text = (safe_str(section.get("section_type")) + " " + safe_str(section.get("section_title"))).casefold()
-    return any(term in text for term in ("introducción", "introduccion", "introduction", "conclusión", "conclusion", "conclusiones", "conclusions", "cierre"))
+    """Reutiliza classify_section_source_requirement (``src/tools/
+    shared/section_source_requirement.py``), la MISMA fuente que
+    consume Stage 05 (``section_allows_empty_papers``), para que una
+    sección aprobada por 05 como source-free nunca pueda ser
+    rechazada aquí por una definición diferente."""
+    return section_is_source_free_organizational(section)
 
 
 def build_draft_reports(sections, outline_sections, evidence_map, policy):
