@@ -60,6 +60,7 @@ from src.tools.draft_writing.validation import (
     validate_generated_section,
     section_allows_no_sources,
 )
+from src.tools.draft_writing.length_repair import attempt_directed_length_repair
 
 
 LEGACY_RETRIEVAL_STRATEGY = "legacy_chroma_then_csv_restricted"
@@ -74,6 +75,14 @@ HYBRID_RETRIEVAL_STRATEGY = "hybrid_chroma_csv_rrf_balanced"
 # tests LEGACY01-08.
 LEGACY_DRAFT_REPRESENTATION_CONTRACT = "legacy"
 CANONICAL_SENTENCES_DRAFT_REPRESENTATION_CONTRACT = "canonical_sentences_v2"
+
+# Reason codes de longitud (Stage 06, corrección del gate configured_
+# min_total_words/configured_max_total_words) -- nunca genéricos bajo
+# INVALID_DRAFT, para que el motivo real (déficit, exceso, o evidencia
+# insuficiente tras intentar reparar) sea auditable explícitamente.
+TOTAL_WORD_COUNT_BELOW_MINIMUM = "TOTAL_WORD_COUNT_BELOW_MINIMUM"
+TOTAL_WORD_COUNT_ABOVE_MAXIMUM = "TOTAL_WORD_COUNT_ABOVE_MAXIMUM"
+INSUFFICIENT_SUPPORTED_CONTENT_FOR_MIN_LENGTH = "INSUFFICIENT_SUPPORTED_CONTENT_FOR_MIN_LENGTH"
 
 LEGACY_VERSIONS = {
     "stage_version": "06_AGENTIC_V16_BEHAVIOR_PRESERVING",
@@ -1299,6 +1308,54 @@ class DraftWritingAgent:
                 }
             )
             validation_calls += 1
+
+            # Reparación dirigida de longitud (requisito: configured_
+            # min_total_words/configured_max_total_words son el único
+            # gate contractual real -- ver validation.py). Se intenta
+            # ÚNICAMENTE cuando el ÚNICO problema es longitud (todo lo
+            # demás -- citas, claims, numérico, secciones -- ya está
+            # correcto) y el contrato es canonical_sentences_v2 (Evidence
+            # Handles es una construcción exclusivamente V2; legacy
+            # conserva el comportamiento histórico sin reparación).
+            length_repair_attempted = False
+            length_repair_successful = False
+            length_only_failure = (
+                not validation["validation_ok"]
+                and validation.get("word_count_compliant", True) is False
+                and validation.get("all_section_validations_ok", False)
+                and validation.get("invalid_citation_count", 1) == 0
+                and not validation.get("sections_without_valid_citations", True)
+                and not validation.get("sections_with_low_citation_density", True)
+                and not validation.get("sections_with_claim_support_errors", True)
+                and not validation.get("sections_with_quantitative_support_errors", True)
+                and validation.get("numeric_failure_count", 1) == 0
+            )
+            if length_only_failure and contract == CANONICAL_SENTENCES_DRAFT_REPRESENTATION_CONTRACT:
+                length_repair_attempted = True
+                repaired_generated, repair_meta = attempt_directed_length_repair(
+                    generated, sections, evidence_map, policy, self.runtime,
+                )
+                if repair_meta["attempted"]:
+                    _, quality_rows, section_rows, claim_rows, numeric_rows = (
+                        build_draft_reports(repaired_generated, sections, evidence_map, policy)
+                    )
+                    repaired_validation = validate_draft_global(
+                        repaired_generated, sections, evidence_map, policy
+                    )
+                    if repaired_validation["validation_ok"]:
+                        generated = repaired_generated
+                        validation = repaired_validation
+                        length_repair_successful = True
+                    else:
+                        # La reparación se intentó pero no cerró el
+                        # déficit/exceso con evidencia real disponible --
+                        # se conserva la validación ORIGINAL (nunca una
+                        # mezcla parcial) para que el reason_code y las
+                        # métricas de auditoría reflejen el estado real.
+                        validation = repaired_validation
+            validation["length_repair_attempted"] = length_repair_attempted
+            validation["length_repair_successful"] = length_repair_successful
+
             if not validation["validation_ok"]:
                 path = write_partial_validation(out, validation)
                 artifacts = {
@@ -1309,6 +1366,144 @@ class DraftWritingAgent:
                         str(out / "raw_section_outputs"), "DIRECTORY"
                     ),
                 }
+                is_final_attempt = agent_input.attempt_number != 1
+
+                # Reason code específico de longitud -- nunca el genérico
+                # INVALID_DRAFT para estos casos. Si ya se intentó reparar
+                # sin éxito (evidencia insuficiente para el mínimo), se
+                # distingue explícitamente de un simple déficit no
+                # reparado todavía.
+                if validation.get("word_count_compliant", True) is False and validation.get("all_section_validations_ok", False) and validation.get("invalid_citation_count", 1) == 0 and not validation.get("sections_without_valid_citations", True) and not validation.get("sections_with_low_citation_density", True) and not validation.get("sections_with_claim_support_errors", True) and not validation.get("sections_with_quantitative_support_errors", True) and validation.get("numeric_failure_count", 1) == 0:
+                    if validation.get("word_deficit", 0) > 0:
+                        length_reason_code = (
+                            INSUFFICIENT_SUPPORTED_CONTENT_FOR_MIN_LENGTH
+                            if length_repair_attempted
+                            else TOTAL_WORD_COUNT_BELOW_MINIMUM
+                        )
+                    else:
+                        length_reason_code = TOTAL_WORD_COUNT_ABOVE_MAXIMUM
+
+                    # Intento final agotado con problema EXCLUSIVAMENTE de
+                    # longitud: fail-closed CIENTÍFICO, nunca técnico --
+                    # APPROVED_PENDING_MANUAL_REVIEW, nunca usable_for_
+                    # evaluation (ese campo no existe en el contrato de
+                    # Agent06; la evaluación parcial solo es válida
+                    # después de Agent07) y nunca ADVANCE hacia 08 -- el
+                    # target_stage permanece None, igual que el camino
+                    # histórico.
+                    if is_final_attempt:
+                        return AgentResult(
+                            execution_status=ExecutionStatus.COMPLETED,
+                            quality_status=QualityStatus.APPROVED_PENDING_MANUAL_REVIEW,
+                            decision=DecisionInfo(
+                                code="DRAFT_LENGTH_OUT_OF_RANGE_MANUAL_REVIEW",
+                                rationale=(
+                                    "El borrador quedó fuera del rango de longitud contractual "
+                                    "tras agotar los intentos; requiere revisión manual antes de "
+                                    "continuar. No se publican salidas finales desde Agent06."
+                                ),
+                            ),
+                            quality_metrics={
+                                "scientific": {
+                                    "configured_min_total_words": validation["configured_min_total_words"],
+                                    "configured_max_total_words": validation["configured_max_total_words"],
+                                    "target_total_words": validation["target_total_words"],
+                                    "actual_total_words": validation["actual_total_words"],
+                                    "effective_min_total_words": validation["effective_min_total_words"],
+                                    "word_deficit": validation.get("word_deficit"),
+                                    "word_excess": validation["word_excess"],
+                                    "word_count_compliant": validation.get("word_count_compliant"),
+                                },
+                                "technical": {
+                                    "validation_ok": False, "reused": False,
+                                    "length_repair_attempted": length_repair_attempted,
+                                    "length_repair_successful": length_repair_successful,
+                                },
+                            },
+                            warnings=(
+                                AgentWarning(
+                                    code=length_reason_code,
+                                    severity=WarningSeverity.WARNING,
+                                    blocking=True,
+                                    message=(
+                                        f"Longitud fuera de rango tras agotar intentos: "
+                                        f"actual_total_words={validation['actual_total_words']}, "
+                                        f"configured_min_total_words={validation['configured_min_total_words']}, "
+                                        f"configured_max_total_words={validation['configured_max_total_words']}."
+                                    ),
+                                ),
+                            ),
+                            failure_reason_codes=(length_reason_code,),
+                            requested_transition=RequestedTransition(
+                                action=TransitionAction.HALT_STAGE,
+                                target_stage=None,
+                                reason_code=length_reason_code,
+                                requires_human_confirmation=True,
+                            ),
+                            output_artifacts=artifacts,
+                            tool_usage=ToolUsage(
+                                retrieval_rounds=retrieval_rounds,
+                                llm_calls=llm_calls,
+                                validation_calls=validation_calls,
+                            ),
+                            attempt_number=agent_input.attempt_number,
+                            started_at=start,
+                            completed_at=datetime.now(timezone.utc).isoformat(),
+                        )
+
+                    return AgentResult(
+                        execution_status=ExecutionStatus.COMPLETED,
+                        quality_status=QualityStatus.NEEDS_REVISION,
+                        decision=DecisionInfo(
+                            code="DRAFT_VALIDATION_FAILED",
+                            rationale=(
+                                "El borrador no superó la validación global; "
+                                "no se publicaron salidas finales."
+                            ),
+                        ),
+                        quality_metrics={
+                            "scientific": {
+                                "configured_min_total_words": validation["configured_min_total_words"],
+                                "configured_max_total_words": validation["configured_max_total_words"],
+                                "target_total_words": validation["target_total_words"],
+                                "actual_total_words": validation["actual_total_words"],
+                                "effective_min_total_words": validation["effective_min_total_words"],
+                                "word_deficit": validation.get("word_deficit"),
+                                "word_excess": validation["word_excess"],
+                                "word_count_compliant": validation.get("word_count_compliant"),
+                            },
+                            "technical": {
+                                "validation_ok": False, "reused": False,
+                                "length_repair_attempted": length_repair_attempted,
+                                "length_repair_successful": length_repair_successful,
+                            },
+                        },
+                        warnings=(
+                            AgentWarning(
+                                code=length_reason_code,
+                                severity=WarningSeverity.ERROR,
+                                blocking=True,
+                                message="La validación global de longitud fue negativa.",
+                            ),
+                        ),
+                        failure_reason_codes=(length_reason_code,),
+                        requested_transition=RequestedTransition(
+                            action=TransitionAction.RETRY,
+                            target_stage=None,
+                            reason_code=length_reason_code,
+                            requires_human_confirmation=False,
+                        ),
+                        output_artifacts=artifacts,
+                        tool_usage=ToolUsage(
+                            retrieval_rounds=retrieval_rounds,
+                            llm_calls=llm_calls,
+                            validation_calls=validation_calls,
+                        ),
+                        attempt_number=agent_input.attempt_number,
+                        started_at=start,
+                        completed_at=datetime.now(timezone.utc).isoformat(),
+                    )
+
                 action = (
                     TransitionAction.RETRY
                     if agent_input.attempt_number == 1
@@ -1444,8 +1639,21 @@ class DraftWritingAgent:
                     ),
                 ),
                 quality_metrics={
-                    "scientific": {},
-                    "technical": {"validation_ok": True, "reused": False},
+                    "scientific": {
+                        "configured_min_total_words": validation.get("configured_min_total_words"),
+                        "configured_max_total_words": validation.get("configured_max_total_words"),
+                        "target_total_words": validation.get("target_total_words"),
+                        "actual_total_words": validation.get("actual_total_words"),
+                        "effective_min_total_words": validation.get("effective_min_total_words"),
+                        "word_deficit": validation.get("word_deficit"),
+                        "word_excess": validation.get("word_excess"),
+                        "word_count_compliant": validation.get("word_count_compliant"),
+                    },
+                    "technical": {
+                        "validation_ok": True, "reused": False,
+                        "length_repair_attempted": validation.get("length_repair_attempted", False),
+                        "length_repair_successful": validation.get("length_repair_successful", False),
+                    },
                 },
                 warnings=(),
                 failure_reason_codes=(),

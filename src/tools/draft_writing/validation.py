@@ -235,13 +235,25 @@ def build_draft_reports(sections, outline_sections, evidence_map, policy):
     target_total = int(policy.get("target_total_words", 1000))
     configured_min = int(policy.get("min_total_words", max(1, int(target_total * 0.65))))
     max_total = int(policy.get("max_total_words", max(target_total, int(target_total * 1.4))))
+    # effective_min_total_words: métrica DIAGNÓSTICA únicamente -- nunca
+    # participa en el gate de aprobación. Antes de esta corrección,
+    # global_length_valid usaba directamente effective_min, permitiendo
+    # que un borrador muy por debajo de configured_min_total_words
+    # (ej. 1081 con configured_min=1300) se aprobara con validation_ok=
+    # True solo porque tenía suficientes secciones source-free
+    # organizacionales. configured_min_total_words es AHORA el único
+    # mínimo contractual real -- el mismo valor que el generation_
+    # profile declaró, sin rebajarse silenciosamente.
     effective_min = max(1, configured_min - source_free_count * max(0, int(target_total / max(len(sections), 1)) - 40))
-    global_length_valid = effective_min <= total_words <= max_total
+    word_deficit = max(0, configured_min - total_words)
+    word_excess = max(0, total_words - max_total)
+    word_count_compliant = configured_min <= total_words <= max_total
+    global_length_valid = word_count_compliant
     all_section_validations_ok = all(bool(row["section_validation_ok"]) for row in quality_rows)
     numeric_failures = sum(1 for row in numeric_rows if not row["found_in_cited_chunks"])
     sections_outside_word_range = [row['section_id'] for row in section_rows if not row['within_section_range']]
     validation_ok = all_section_validations_ok and invalid_citation_count == 0 and not sections_without_valid_citations and not sections_with_low_citation_density and not sections_with_claim_support_errors and not sections_with_quantitative_support_errors and numeric_failures == 0 and global_length_valid
-    report = {"validation_ok": validation_ok, "invalid_citation_count": invalid_citation_count, "sections_without_valid_citations": sections_without_valid_citations, "sections_with_low_citation_density": sections_with_low_citation_density, "sections_with_claim_support_errors": sections_with_claim_support_errors, "sections_with_quantitative_support_errors": sections_with_quantitative_support_errors, "numeric_failure_count": numeric_failures, "total_words": total_words, "target_total_words": target_total, "configured_min_total_words": configured_min, "effective_min_total_words": effective_min, "max_total_words": max_total, "source_free_organizational_section_count": source_free_count, "global_length_valid": global_length_valid, "section_count": len(sections), "all_section_validations_ok": all_section_validations_ok, "open_search_used": False, "ground_truth_used": False, "sections_outside_word_range": sections_outside_word_range}
+    report = {"validation_ok": validation_ok, "invalid_citation_count": invalid_citation_count, "sections_without_valid_citations": sections_without_valid_citations, "sections_with_low_citation_density": sections_with_low_citation_density, "sections_with_claim_support_errors": sections_with_claim_support_errors, "sections_with_quantitative_support_errors": sections_with_quantitative_support_errors, "numeric_failure_count": numeric_failures, "total_words": total_words, "actual_total_words": total_words, "target_total_words": target_total, "configured_min_total_words": configured_min, "effective_min_total_words": effective_min, "configured_max_total_words": max_total, "max_total_words": max_total, "word_deficit": word_deficit, "word_excess": word_excess, "word_count_compliant": word_count_compliant, "source_free_organizational_section_count": source_free_count, "global_length_valid": global_length_valid, "section_count": len(sections), "all_section_validations_ok": all_section_validations_ok, "open_search_used": False, "ground_truth_used": False, "sections_outside_word_range": sections_outside_word_range}
     return report, quality_rows, section_rows, claim_evidence_rows, numeric_rows
 
 
