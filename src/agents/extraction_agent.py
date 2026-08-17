@@ -1267,6 +1267,33 @@ class ExtractionAgent:
                 paths["CARDS_QUALITY_CSV_PATH"],
             )
 
+            # Mismo bug de sincronización que Problema 2, aplicado al
+            # plan de revisión: scientific_cards_revision_plan.csv se
+            # escribía UNA SOLA VEZ, al comienzo del intento 2 (para
+            # decidir qué reparar: title_sources, etc.), usando las
+            # cards TAL COMO llegaron del intento 1 -- ANTES de title
+            # repair del intento 2, de la reclasificación de
+            # relevancia y de la exclusión de reviews. El archivo en
+            # disco quedaba desactualizado (fichas ya excluidas como
+            # review seguían apareciendo como "inválidas" bloqueantes,
+            # con el esquema de columnas viejo) aunque la DECISIÓN del
+            # agente (quality_status, vía _scientific_reason_codes)
+            # siempre recalculó correctamente sobre las cards finales
+            # en memoria -- este bloque sincroniza también el artefacto
+            # persistido, reconstruyéndolo aquí con las mismas cards
+            # finales ya usadas para summary/quality/manifest. Un
+            # EXCLUDE confirmado nunca vuelve a aparecer (build_
+            # revision_plan ya lo salta, ver revision_strategy.py);
+            # una ficha UNKNOWN inválida aparece con primary_reason_
+            # code=DOCUMENT_TYPE_UNKNOWN_AND_CARD_INVALID.
+            revision_rows_final = build_revision_plan(
+                cards, extraction_errors, retrieval_trace_rows,
+            )
+            self.dependencies.save_dataframe(
+                pd.DataFrame(revision_rows_final, columns=REVISION_PLAN_COLUMNS),
+                paths["CARDS_REVISION_PLAN_CSV_PATH"],
+            )
+
             # Registro auditable de exclusión (fail-closed, nunca
             # silencioso): source_filename, tipo detectado, motivo y
             # regla de policy aplicada. Una ficha puede evaluarse en
