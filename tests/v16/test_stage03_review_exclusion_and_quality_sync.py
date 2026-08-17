@@ -112,10 +112,14 @@ def test_r2_review_with_policy_off_blocks_as_before():
     env, result = _run_with_exclude_reviews({"a.pdf": review}, exclude_reviews=False)
     assert result.quality_status == QualityStatus.NEEDS_REVISION
 
-    # Mismo resultado con la clave ausente por completo (default seguro).
+    # Clave ausente por completo -> usa el DEFAULT CANÓNICO del sistema
+    # (exclude_reviews=True, ver _DEFAULT_EXTRACTION_POLICY en
+    # generation_policy_config.py), NO el viejo default False -- una
+    # review sin exclude_reviews explícito ahora sí se excluye,
+    # exactamente como cualquier experimento nuevo sin overrides.
     env2 = ExtractionAgentEnvironment(extraction_cards={"a.pdf": _review_card("a.pdf")})
     result2 = ExtractionAgent(env2.dependencies).execute(env2.agent_input)
-    assert result2.quality_status == QualityStatus.NEEDS_REVISION
+    assert result2.quality_status == QualityStatus.APPROVED
 
 
 @scenario("R3. Paper empírico con campos críticos faltantes -> sigue bloqueando/reintentando, exclude_reviews=True no lo afecta")
@@ -129,11 +133,15 @@ def test_r3_empirical_paper_missing_fields_still_blocks():
     assert result.quality_status == QualityStatus.NEEDS_REVISION
 
 
-@scenario("R4. Clasificación incierta/contradictoria (paper_type=review, task_type=algo distinto) -> NO se excluye automáticamente, fail-closed")
+@scenario("R4. Clasificación incierta/contradictoria (paper_type EXPLÍCITO distinto de review, título con marcador) -> NO se excluye automáticamente, fail-closed")
 def test_r4_uncertain_classification_never_auto_excludes():
+    # task_type nunca contradice (ver review_exclusion.py) -- la
+    # única contradicción real es entre el tipo documental
+    # estructurado (paper_type/document_type) y el título.
     contradictory = complete_card("a.pdf")
     contradictory.update({
-        "paper_type": "review", "task_type": "classification",
+        "title": "A Systematic Review of Existing Methods Motivates a New Hybrid Approach",
+        "paper_type": "empirical", "task_type": "classification",
         "methods_or_models": [], "main_results": "no especificado",
     })
     env, result = _run_with_exclude_reviews({"a.pdf": contradictory}, exclude_reviews=True)

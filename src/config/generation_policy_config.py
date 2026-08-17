@@ -123,7 +123,26 @@ _DEFAULT_EXTRACTION_POLICY = {
     "force_rebuild": False,
     "max_attempts": 2,
     "max_retrieval_rounds": 2,
-    "exclude_reviews": False,
+    # Política metodológica CANÓNICA: todo experimento nuevo nace con
+    # los reviews/surveys completos excluidos del corpus de
+    # generación -- esto ya NO depende de que una celda de notebook
+    # escriba active_experiment.json manualmente (ver Corrida_03_a_08:
+    # esa celda ahora solo hace un preflight fail-closed, nunca
+    # escribe la policy). Sigue siendo configurable explícitamente:
+    # un experimento que declare "exclude_reviews": false en su
+    # active_experiment.json lo sobrescribe conscientemente, y
+    # extraction_agent.py/classify_review_exclusion() lo respetan sin
+    # cambios -- lo único que cambió es este DEFAULT, nunca la
+    # semántica del clasificador.
+    "exclude_reviews": True,
+    # Corpus Eligibility Gate (ver corpus_eligibility.py): el gate en
+    # sí (INCLUDE/EXCLUDE/QUARANTINE) es parte OBLIGATORIA de Stage03
+    # -- siempre corre, no existe ("ni debe existir) un interruptor
+    # "enabled" que lo desactive, porque un documento individual no
+    # útil o no validable nunca debe poder saltarse la clasificación
+    # y bloquear todo el corpus por accidente. Lo único configurable
+    # es el umbral mínimo de corpus elegible antes de HALT global.
+    "corpus_eligibility_policy": {"min_include_corpus_size": 1},
     "thresholds": {
         "approval": {"critical_field_coverage": 0.92},
         "minimum_usable_quality": {"critical_field_coverage": 0.80},
@@ -465,10 +484,20 @@ def _validate_policy(
     )
     policy["exclude_reviews"] = (
         _boolean(
-            policy.get("exclude_reviews", False),
+            policy.get("exclude_reviews", True),
             "extraction_policy.exclude_reviews",
         )
     )
+    corpus_eligibility_policy = dict(
+        policy.get("corpus_eligibility_policy") or {}
+    )
+    corpus_eligibility_policy["min_include_corpus_size"] = (
+        _positive_int(
+            corpus_eligibility_policy.get("min_include_corpus_size", 1),
+            "extraction_policy.corpus_eligibility_policy.min_include_corpus_size",
+        )
+    )
+    policy["corpus_eligibility_policy"] = corpus_eligibility_policy
     policy["max_attempts"] = (
         _positive_int(
             policy.get(

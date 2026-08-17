@@ -207,6 +207,10 @@ class ExtractionAgentEnvironment:
                 self.dir_extraction
                 / "scientific_cards_review_exclusion_audit.csv"
             ),
+            "CARDS_QUARANTINE_AUDIT_CSV_PATH": (
+                self.dir_extraction
+                / "scientific_cards_quarantine_audit.csv"
+            ),
             "RETRIEVAL_TRACE_CSV_PATH": (
                 self.dir_extraction
                 / "extraction_retrieval_trace.csv"

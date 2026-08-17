@@ -11,7 +11,8 @@ from collections import defaultdict
 from typing import Any, Mapping, Sequence
 
 from .card_validation import CARD_REQUIRED_FIELDS, build_quality_row
-from .review_exclusion import is_review_excluded, is_unknown_document_type
+from .review_exclusion import is_unknown_document_type
+from .corpus_eligibility import is_corpus_include
 
 
 REVISION_PLAN_COLUMNS = [
@@ -134,14 +135,18 @@ def build_revision_plan(
     for card in cards:
         source = str(card.get("source_filename", ""))
 
-        # Ficha excluida de forma determinista y auditable (ver
-        # review_exclusion.py) -- nunca participa en el plan de
-        # revisión: no se le exige methods_or_models/evaluation_
-        # metrics/main_results, porque una review excluida por policy
-        # no debe bloquear Stage 03 por carecer de resultados
-        # empíricos que nunca tuvo. La ficha en sí no se toca aquí --
+        # Corpus eligibility gate (ver corpus_eligibility.py): SOLO
+        # las fichas INCLUDE entran al quality gate científico -- un
+        # documento EXCLUDE (review/fuera de scope) o QUARANTINE
+        # (título/metadata irrecuperable, contenido insuficiente,
+        # relevancia indeterminable) nunca participa en el plan de
+        # revisión, nunca se le exige methods_or_models/evaluation_
+        # metrics/main_results, y nunca bloquea Stage03 por sí solo.
+        # is_corpus_include trata la ausencia del campo canónico como
+        # INCLUDE (retrocompatible con cualquier card que aún no pasó
+        # por el eligibility gate). La ficha en sí no se toca aquí --
         # solo se salta del plan.
-        if is_review_excluded(card):
+        if not is_corpus_include(card):
             continue
 
         invalid_title = is_invalid_title(card)

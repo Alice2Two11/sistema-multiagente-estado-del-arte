@@ -97,6 +97,12 @@ from src.tools.extraction.review_exclusion import (
     apply_review_exclusion_policy,
     is_review_excluded,
 )
+from src.tools.extraction.corpus_eligibility import (
+    QUARANTINE_AUDIT_COLUMNS,
+    apply_corpus_eligibility_policy,
+    is_corpus_include,
+    is_corpus_quarantined,
+)
 
 
 EXPECTED_STAGE_NAME = "03_agente_extraccion_kb"
@@ -116,6 +122,7 @@ _REQUIRED_PATH_KEYS = (
     "CARDS_QUALITY_CSV_PATH",
     "CARDS_REVISION_PLAN_CSV_PATH",
     "CARDS_REVIEW_EXCLUSION_AUDIT_CSV_PATH",
+    "CARDS_QUARANTINE_AUDIT_CSV_PATH",
     "RETRIEVAL_TRACE_CSV_PATH",
     "EXTRACTION_MANIFEST_PATH",
     "CHUNKS_VALIDATION_REPORT_PATH",
@@ -568,6 +575,10 @@ class ExtractionAgent:
             retrieval_trace_rows: list[dict[str, Any]]
             cards: list[dict[str, Any]]
             review_exclusion_audit_rows: list[dict[str, Any]] = []
+            quarantine_audit_rows: list[dict[str, Any]] = []
+            corpus_eligibility_counts: dict[str, int] = {
+                "include": 0, "exclude": 0, "quarantine": 0,
+            }
             initial_calls = 0
             repair_calls = 0
             bad_after_repair: list[str] = []
@@ -661,9 +672,19 @@ class ExtractionAgent:
                     exclusion_policy = dict(
                         signature_policy.get("extraction_policy", {})
                     )
+                    # Fallback True: la fuente canónica de este
+                    # default (_DEFAULT_EXTRACTION_POLICY en
+                    # generation_policy_config.py) ya materializa
+                    # exclude_reviews=True para todo experimento nuevo
+                    # -- este fallback solo se alcanza si signature_
+                    # policy llegó sin pasar por esa fuente (ej. un
+                    # test que construye la policy a mano). Nunca
+                    # sobrescribe un override explícito: si la policy
+                    # SÍ trae exclude_reviews=False, .get() lo respeta
+                    # sin tocarlo.
                     exclusion_result_initial = apply_review_exclusion_policy(
                         cards,
-                        exclude_reviews=bool(exclusion_policy.get("exclude_reviews", False)),
+                        exclude_reviews=bool(exclusion_policy.get("exclude_reviews", True)),
                         created_at=self.dependencies.now_factory(),
                     )
                     cards = exclusion_result_initial["cards"]
@@ -1158,7 +1179,10 @@ class ExtractionAgent:
             )
             exclusion_result_final = apply_review_exclusion_policy(
                 cards,
-                exclude_reviews=bool(exclusion_policy_final.get("exclude_reviews", False)),
+                # Mismo fallback True sincronizado con la fuente
+                # canónica (_DEFAULT_EXTRACTION_POLICY) -- ver
+                # comentario equivalente en el intento 1, arriba.
+                exclude_reviews=bool(exclusion_policy_final.get("exclude_reviews", True)),
                 created_at=self.dependencies.now_factory(),
             )
             cards = exclusion_result_final["cards"]
@@ -1166,6 +1190,33 @@ class ExtractionAgent:
                 exclusion_result_final["audit_rows"]
             )
             if exclusion_result_final["num_excluded"]:
+                kb_should_recreate = True
+                self.dependencies.save_jsonl(
+                    cards,
+                    paths["CARDS_JSONL_PATH"],
+                )
+
+            # Corpus eligibility gate (ver corpus_eligibility.py) --
+            # ÚLTIMA clasificación antes del quality gate científico,
+            # justo después de que title repair, exclusión de reviews
+            # y clasificación de relevancia YA están completas (todas
+            # las señales que reutiliza están disponibles recién
+            # aquí). Persiste el estado canónico INCLUDE/EXCLUDE/
+            # QUARANTINE en cada card -- fuente única que build_
+            # revision_plan, KB, summary, quality y manifest deben
+            # consumir para no divergir entre sí. Un documento
+            # individual no útil o no validable (QUARANTINE) nunca
+            # detiene todo el corpus: solo se audita, nunca entra al
+            # plan de revisión.
+            eligibility_result = apply_corpus_eligibility_policy(
+                cards, created_at=self.dependencies.now_factory(),
+            )
+            cards = eligibility_result["cards"]
+            corpus_eligibility_counts = eligibility_result["counts"]
+            quarantine_audit_rows.extend(
+                eligibility_result["quarantine_audit_rows"]
+            )
+            if eligibility_result["quarantine_audit_rows"]:
                 kb_should_recreate = True
                 self.dependencies.save_jsonl(
                     cards,
@@ -1310,6 +1361,20 @@ class ExtractionAgent:
                 EXCLUSION_AUDIT_COLUMNS,
             )
 
+            # Registro auditable de QUARANTINE (fail-closed, nunca
+            # silencioso): título/metadata irrecuperable, contenido
+            # insuficiente o relevancia indeterminable, para revisión
+            # humana -- ver corpus_eligibility.py. Misma deduplicación
+            # por source_filename que el audit de exclusión.
+            deduplicated_quarantine_rows: dict[str, dict[str, Any]] = {}
+            for row in quarantine_audit_rows:
+                deduplicated_quarantine_rows[str(row.get("source_filename", ""))] = row
+            save_dataframe_even_if_empty(
+                list(deduplicated_quarantine_rows.values()),
+                paths["CARDS_QUARANTINE_AUDIT_CSV_PATH"],
+                QUARANTINE_AUDIT_COLUMNS,
+            )
+
             papers_processed = len(cards)
             papers_excluded_by_review_policy = sum(
                 1 for card in cards if is_review_excluded(card)
@@ -1335,7 +1400,72 @@ class ExtractionAgent:
                         if str(row.get("action")) == "UNCERTAIN"
                     )
                 ),
+                # Corpus eligibility gate -- fuente canónica: cada
+                # ficha está en EXACTAMENTE uno de estos tres estados
+                # (corpus_eligibility.py), independientemente de las
+                # métricas históricas de arriba (que combinan EXCLUDE
+                # y QUARANTINE bajo include_in_state_of_art=False).
+                "papers_corpus_include": int(
+                    corpus_eligibility_counts.get("include", 0)
+                ),
+                "papers_corpus_exclude": int(
+                    corpus_eligibility_counts.get("exclude", 0)
+                ),
+                "papers_corpus_quarantine": int(
+                    corpus_eligibility_counts.get("quarantine", 0)
+                ),
             })
+
+            # HALT global por condición SISTÉMICA (nunca por un
+            # documento individual): sin ningún documento elegible
+            # (INCLUDE), Stage03 no tiene corpus con el que continuar
+            # -- esto es un fallo del CORPUS COMPLETO, no de una ficha
+            # aislada, y por eso sí detiene la etapa. El mínimo
+            # configurable (extraction_policy.corpus_eligibility_
+            # policy.min_include_corpus_size, default 1 -- exigir al
+            # menos un documento) permite a cada experimento declarar
+            # un umbral más estricto sin cambiar código.
+            corpus_eligibility_policy = dict(
+                exclusion_policy_final.get("corpus_eligibility_policy", {})
+            )
+            min_include_corpus_size = int(
+                corpus_eligibility_policy.get("min_include_corpus_size", 1)
+            )
+            papers_corpus_include = corpus_eligibility_counts.get("include", 0)
+            if papers_corpus_include < max(1, min_include_corpus_size):
+                artifacts = self._collect_output_artifacts(paths)
+                return AgentResult(
+                    execution_status=ExecutionStatus.COMPLETED,
+                    quality_status=QualityStatus.REJECTED,
+                    decision=DecisionInfo(
+                        code="CORPUS_ELIGIBILITY_INSUFFICIENT",
+                        rationale=(
+                            f"Solo {papers_corpus_include} documento(s) elegible(s) "
+                            f"(INCLUDE) para el corpus -- mínimo configurado: "
+                            f"{max(1, min_include_corpus_size)}. Condición sistémica: "
+                            "Stage03 no tiene corpus utilizable, nunca por un "
+                            "documento individual."
+                        ),
+                    ),
+                    quality_metrics=metrics,
+                    warnings=(),
+                    failure_reason_codes=("CORPUS_ELIGIBILITY_INSUFFICIENT",),
+                    requested_transition=RequestedTransition(
+                        action=TransitionAction.HALT_STAGE,
+                        target_stage=None,
+                        reason_code="CORPUS_ELIGIBILITY_INSUFFICIENT",
+                        requires_human_confirmation=True,
+                    ),
+                    output_artifacts=artifacts,
+                    tool_usage=ToolUsage(
+                        retrieval_rounds=retrieval_rounds,
+                        llm_calls=llm_calls,
+                        validation_calls=validation_calls,
+                    ),
+                    attempt_number=agent_input.attempt_number,
+                    started_at=started_at,
+                    completed_at=self.dependencies.now_factory(),
+                )
 
             # Ensure the primary card/error/trace artifacts exist before the
             # manifest and audit, including current-output reuse.

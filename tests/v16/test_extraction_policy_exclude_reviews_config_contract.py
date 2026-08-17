@@ -113,11 +113,11 @@ def test_c2_exclude_reviews_false_accepted():
     assert policy["exclude_reviews"] is False
 
 
-@scenario("C3. Ausencia de la clave conserva el comportamiento histórico: exclude_reviews=False")
-def test_c3_absent_key_defaults_to_false():
+@scenario("C3. Ausencia de la clave conserva el comportamiento CANÓNICO: exclude_reviews=True (todo experimento nuevo excluye reviews por defecto)")
+def test_c3_absent_key_defaults_to_true():
     module = _load_module_with_extraction_policy({})
     policy = module.get_extraction_policy()
-    assert policy["exclude_reviews"] is False
+    assert policy["exclude_reviews"] is True
     assert "exclude_reviews" not in module._RAW_POLICY
 
 
@@ -175,7 +175,7 @@ if __name__ == "__main__":
     for fn in (
         test_c1_exclude_reviews_true_accepted,
         test_c2_exclude_reviews_false_accepted,
-        test_c3_absent_key_defaults_to_false,
+        test_c3_absent_key_defaults_to_true,
         test_c4_non_bool_values_rejected,
         test_c5_truly_unknown_key_still_rejected,
         test_c6_exclude_reviews_participates_in_fingerprint,
