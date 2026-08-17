@@ -10,7 +10,7 @@ from __future__ import annotations
 from collections import defaultdict
 from typing import Any, Mapping, Sequence
 
-from .card_validation import CARD_REQUIRED_FIELDS, build_quality_row
+from .card_validation import build_quality_row, required_fields_for_card
 from .review_exclusion import is_unknown_document_type
 from .corpus_eligibility import is_corpus_include
 
@@ -74,7 +74,13 @@ def missing_critical_fields(card: Mapping[str, Any]) -> list[str]:
         "none",
         "nan",
     }
-    for field in CARD_REQUIRED_FIELDS:
+    # Contrato SEMÁNTICAMENTE CONDICIONAL (ver card_validation.py,
+    # required_fields_for_card): target_domain solo se exige para
+    # papers que reclaman un dominio de aplicación concreto (estudios
+    # empíricos/domain-specific) -- un paper metodológico/fundacional/
+    # de propósito general nunca debe bloquearse por carecer de un
+    # dominio que su contribución no reclama.
+    for field in required_fields_for_card(dict(card)):
         value = card.get(field)
         if value is None:
             missing.append(field)

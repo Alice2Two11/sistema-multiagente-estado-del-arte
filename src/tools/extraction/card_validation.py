@@ -29,6 +29,87 @@ CARD_REQUIRED_FIELDS = [
     "evidence",
 ]
 
+# Contrato de campos críticos SEMÁNTICAMENTE CONDICIONAL: no todo
+# campo en CARD_REQUIRED_FIELDS aplica a todo tipo de paper por igual.
+# target_domain describe el DOMINIO DE APLICACIÓN de un estudio
+# empírico/domain-specific -- para un paper metodológico, fundacional
+# o de propósito general, el dominio de aplicación simplemente no es
+# un atributo que el paper reclame (su contribución es el método en
+# sí, no un dominio concreto). Exigirlo ahí fuerza al LLM a inventar
+# un dominio que el paper nunca declara -- exactamente lo que este
+# contrato evita: NUNCA se rellena, se reconoce como no aplicable.
+#
+# UNIVERSAL_REQUIRED_FIELDS: exigidos para CUALQUIER tipo de paper,
+# independientemente de su rol científico -- identidad documental y
+# científica básica.
+UNIVERSAL_REQUIRED_FIELDS = [
+    field for field in CARD_REQUIRED_FIELDS if field != "target_domain"
+]
+
+# CONDITIONALLY_REQUIRED_FIELDS: solo se exigen cuando el paper SÍ es
+# de un tipo que reclama un dominio de aplicación (estudio empírico/
+# domain-specific) -- ver is_domain_agnostic_paper().
+CONDITIONALLY_REQUIRED_FIELDS = ["target_domain"]
+
+# Marcadores de ROL científico del paper (paper_type/task_type) que
+# indican que es metodológico/fundacional/de propósito general --
+# términos que describen el TIPO de contribución (nunca un dominio de
+# aplicación concreto como ECG, NLP, energía solar, ciberseguridad,
+# etc.), así que esta lista es multidominio por construcción: nunca
+# necesita ampliarse para un dominio nuevo.
+_DOMAIN_AGNOSTIC_ROLE_MARKERS = frozenset({
+    "methodological_proposal", "methodological", "method_proposal",
+    "methodology_proposal", "foundational_method", "foundational",
+    "general_method", "general_purpose_method", "general purpose method",
+    "algorithm_proposal", "framework_proposal", "framework",
+    "theoretical", "theoretical_contribution", "architecture_proposal",
+    "model_proposal", "domain_agnostic", "domain-agnostic",
+})
+
+# Valores de target_domain que YA declaran explícitamente "sin dominio
+# de aplicación concreto" -- una señal directa, independiente de
+# paper_type/task_type. Nunca deben tratarse como "campo faltante".
+_DOMAIN_AGNOSTIC_TARGET_DOMAIN_VALUES = frozenset({
+    "general", "general purpose", "general-purpose", "domain-agnostic",
+    "domain agnostic", "n/a", "not applicable", "no aplica",
+})
+
+
+def _normalize_role(value: Any) -> str:
+    return str(value or "").strip().casefold()
+
+
+def is_domain_agnostic_paper(card: dict[str, Any]) -> bool:
+    """True si el ROL científico del paper (``paper_type``/
+    ``task_type``, o un ``target_domain`` ya declarado explícitamente
+    como "general"/"domain-agnostic") indica que es metodológico,
+    fundacional o de propósito general -- nunca tiene un dominio de
+    aplicación concreto que reportar. Puramente determinista, sin LLM,
+    sin vocabulario de ningún dominio específico -- multidominio por
+    construcción."""
+
+    if _normalize_role(card.get("paper_type")) in _DOMAIN_AGNOSTIC_ROLE_MARKERS:
+        return True
+    if _normalize_role(card.get("task_type")) in _DOMAIN_AGNOSTIC_ROLE_MARKERS:
+        return True
+    if _normalize_role(card.get("target_domain")) in _DOMAIN_AGNOSTIC_TARGET_DOMAIN_VALUES:
+        return True
+    return False
+
+
+def required_fields_for_card(card: dict[str, Any]) -> list[str]:
+    """Contrato de campos críticos para ESTA ficha concreta,
+    semánticamente condicional: los campos universales siempre se
+    exigen; ``target_domain`` solo se exige si el paper NO es
+    domain-agnostic (``is_domain_agnostic_paper``). Nunca inventa ni
+    rellena valores -- solo decide qué campos participan en la
+    validación de completitud."""
+
+    fields = list(UNIVERSAL_REQUIRED_FIELDS)
+    if not is_domain_agnostic_paper(card):
+        fields.extend(CONDITIONALLY_REQUIRED_FIELDS)
+    return fields
+
 SUMMARY_COLUMNS = [
     "source_filename",
     "title",
