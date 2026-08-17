@@ -61,7 +61,15 @@ class DirectedAttempt2Tests(unittest.TestCase):
         finally:
             env.close()
 
-    def test_attempt_two_reuses_attempt_one_cards_and_does_not_regenerate_healthy(self):
+    def test_attempt_two_never_retries_repair_for_a_card_already_quarantined(self):
+        # Comportamiento actualizado (pre-eligibilidad documental, ver
+        # corpus_eligibility.py): una card con output LLM ambiguo
+        # (title="error", evidence=[]) queda QUARANTINE
+        # DEFINITIVAMENTE en el intento 1 mismo -- el intento 2 NUNCA
+        # vuelve a intentar reparar su título (a diferencia del
+        # comportamiento histórico, que la reparaba vía el ciclo de
+        # dos intentos). No se llama a repair_llm para esa fuente en
+        # ningún momento.
         ambiguous = [complete_card("b.pdf"), complete_card("b.pdf")]
         env = ExtractionAgentEnvironment(
             extraction_cards={"b.pdf": ambiguous},
@@ -69,18 +77,20 @@ class DirectedAttempt2Tests(unittest.TestCase):
         )
         try:
             first = ExtractionAgent(env.dependencies).execute(env.agent_input)
-            first_main_calls = len(env.main_llm.calls)
             second = ExtractionAgent(env.dependencies).execute(
                 attempt_two_input(env.agent_input, first)
             )
             self.assertEqual(second.execution_status, ExecutionStatus.COMPLETED)
-            self.assertEqual(len(env.main_llm.calls), first_main_calls + 2)  # classification only
+            self.assertIsNone(second.error)
             repaired_sources = [
                 call[0].content.split("::", 2)[1]
                 for call in env.repair_llm.calls
                 if call[0].content.startswith("EXTRACT::")
             ]
-            self.assertEqual(repaired_sources, ["b.pdf"])
+            self.assertNotIn("b.pdf", repaired_sources)
+            cards = env.dependencies.load_jsonl(env.paths["CARDS_JSONL_PATH"])
+            b_card = next(c for c in cards if c["source_filename"] == "b.pdf")
+            self.assertEqual(b_card["corpus_eligibility"], "QUARANTINE")
         finally:
             env.close()
 
@@ -126,22 +136,39 @@ class DirectedAttempt2Tests(unittest.TestCase):
             env.close()
 
     def test_quality_and_revision_plan_exist_before_retry(self):
+        # Comportamiento actualizado (pre-eligibilidad documental, ver
+        # corpus_eligibility.py): una card con output LLM ambiguo/
+        # inválido (title="error", evidence=[]) ahora se captura como
+        # QUARANTINE en FASE 1, ANTES de llegar al quality gate
+        # científico -- ya no aparece en el revision_plan como
+        # INVALID_LLM_OUTPUT bloqueante, y queda auditada.
         ambiguous = [complete_card("b.pdf"), complete_card("b.pdf")]
         env = ExtractionAgentEnvironment(extraction_cards={"b.pdf": ambiguous})
         try:
             result = ExtractionAgent(env.dependencies).execute(env.agent_input)
-            self.assertEqual(result.quality_status, QualityStatus.NEEDS_REVISION)
             self.assertTrue(env.paths["CARDS_SUMMARY_CSV_PATH"].is_file())
             self.assertTrue(env.paths["CARDS_QUALITY_CSV_PATH"].is_file())
             self.assertTrue(env.paths["CARDS_REVISION_PLAN_CSV_PATH"].is_file())
             plan = pd.read_csv(env.paths["CARDS_REVISION_PLAN_CSV_PATH"])
-            row = plan.loc[plan["source_filename"] == "b.pdf"].iloc[0]
-            self.assertEqual(row["primary_reason_code"], "INVALID_LLM_OUTPUT")
-            self.assertFalse(env.paths["KB_CSV_PATH"].exists())
+            self.assertNotIn("b.pdf", plan["source_filename"].tolist() if len(plan) else [])
+            self.assertTrue(env.paths["CARDS_QUARANTINE_AUDIT_CSV_PATH"].is_file())
+            quarantine = pd.read_csv(env.paths["CARDS_QUARANTINE_AUDIT_CSV_PATH"])
+            self.assertIn("b.pdf", quarantine["source_filename"].tolist())
+            cards = env.dependencies.load_jsonl(env.paths["CARDS_JSONL_PATH"])
+            b_card = next(c for c in cards if c["source_filename"] == "b.pdf")
+            self.assertEqual(b_card["corpus_eligibility"], "QUARANTINE")
         finally:
             env.close()
 
     def test_kb_is_built_after_sufficient_attempt_two(self):
+        # Comportamiento actualizado: una card QUARANTINE nunca
+        # impide que la KB se construya -- solo depende de que exista
+        # al menos una card INCLUDE válida. Este escenario ya no
+        # necesita un segundo intento para "reparar" la card ambigua
+        # (queda QUARANTINE definitivamente desde el intento 1), así
+        # que verifica directamente que el KB se construye con esa
+        # mezcla, y que un segundo intento (llamado igualmente, sin
+        # cambios pendientes) sigue siendo consistente.
         ambiguous = [complete_card("b.pdf"), complete_card("b.pdf")]
         env = ExtractionAgentEnvironment(
             extraction_cards={"b.pdf": ambiguous},
@@ -152,13 +179,15 @@ class DirectedAttempt2Tests(unittest.TestCase):
             second = ExtractionAgent(env.dependencies).execute(
                 attempt_two_input(env.agent_input, first)
             )
-            self.assertIn(second.quality_status, {
-                QualityStatus.APPROVED,
-                QualityStatus.APPROVED_WITH_WARNINGS,
-            })
+            self.assertEqual(second.execution_status, ExecutionStatus.COMPLETED)
+            self.assertIsNone(second.error)
             self.assertTrue(env.paths["KB_CSV_PATH"].is_file())
             self.assertTrue(env.paths["KB_JSONL_PATH"].is_file())
             self.assertTrue(env.paths["EXTRACTION_MANIFEST_PATH"].is_file())
+            cards = env.dependencies.load_jsonl(env.paths["CARDS_JSONL_PATH"])
+            eligibility_by_source = {c["source_filename"]: c.get("corpus_eligibility") for c in cards}
+            self.assertEqual(eligibility_by_source.get("a.pdf"), "INCLUDE")
+            self.assertEqual(eligibility_by_source.get("b.pdf"), "QUARANTINE")
         finally:
             env.close()
 

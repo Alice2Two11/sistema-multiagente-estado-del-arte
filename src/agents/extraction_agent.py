@@ -100,6 +100,7 @@ from src.tools.extraction.review_exclusion import (
 from src.tools.extraction.corpus_eligibility import (
     QUARANTINE_AUDIT_COLUMNS,
     apply_corpus_eligibility_policy,
+    apply_pre_eligibility_policy,
     is_corpus_include,
     is_corpus_quarantined,
 )
@@ -692,6 +693,30 @@ class ExtractionAgent:
                         exclusion_result_initial["audit_rows"]
                     )
 
+                    # PRE-ELIGIBILIDAD DOCUMENTAL (FASE 1, ver
+                    # corpus_eligibility.py) -- INMEDIATAMENTE después
+                    # del repair de título ya intentado, ANTES de que
+                    # build_revision_plan (el quality gate CIENTÍFICO)
+                    # se calcule por primera vez. Esto es lo que
+                    # corrige la causa raíz real: antes, una ficha con
+                    # título irrecuperable (ej. is_bad_card) llegaba
+                    # aquí y build_revision_plan la marcaba
+                    # MISSING_OR_INVALID_TITLE, forzando NEEDS_
+                    # REVISION/RETRY sin que el sistema tuviera
+                    # oportunidad de clasificarla QUARANTINE -- nunca
+                    # llegaba al bloque compartido donde antes vivía
+                    # el gate completo. Ahora se marca QUARANTINE (o
+                    # EXCLUDE si es review) AQUÍ MISMO, y build_
+                    # revision_plan (vía is_corpus_include) nunca la
+                    # ve como bloqueante.
+                    pre_eligibility_result = apply_pre_eligibility_policy(
+                        cards, created_at=self.dependencies.now_factory(),
+                    )
+                    cards = pre_eligibility_result["cards"]
+                    quarantine_audit_rows.extend(
+                        pre_eligibility_result["quarantine_audit_rows"]
+                    )
+
                     revision_rows = build_revision_plan(
                         cards,
                         extraction_errors,
@@ -792,6 +817,28 @@ class ExtractionAgent:
                     cards = [dict(card) for card in previous_cards_for_attempt2]
                     extraction_errors = list(previous_errors_for_attempt2)
                     retrieval_trace_rows = list(previous_trace_for_attempt2)
+
+                    # PRE-ELIGIBILIDAD DOCUMENTAL (FASE 1) -- se
+                    # reaplica aquí, ANTES del build_revision_plan
+                    # temprano del intento 2, por robustez: si alguna
+                    # ficha llegó al intento 2 sin corpus_eligibility
+                    # ya resuelto (ej. otra ficha del mismo lote forzó
+                    # el RETRY desde el intento 1 por campos
+                    # faltantes, y esta viajó junto con fase 1 aún sin
+                    # aplicar), nunca debe evaluarse aquí como
+                    # bloqueante. Reaplicar sobre una ficha que YA
+                    # tiene corpus_eligibility resuelto es un no-op
+                    # seguro (classify_pre_eligibility es
+                    # determinista y no depende del campo ya
+                    # persistido).
+                    pre_eligibility_result_attempt2 = apply_pre_eligibility_policy(
+                        cards, created_at=self.dependencies.now_factory(),
+                    )
+                    cards = pre_eligibility_result_attempt2["cards"]
+                    quarantine_audit_rows.extend(
+                        pre_eligibility_result_attempt2["quarantine_audit_rows"]
+                    )
+
                     revision_rows = build_revision_plan(
                         cards,
                         extraction_errors,
@@ -1100,7 +1147,7 @@ class ExtractionAgent:
 
                 relevance_result = (
                     self.dependencies.run_relevance(
-                        [c for c in cards if not is_review_excluded(c)],
+                        [c for c in cards if not is_review_excluded(c) and not is_corpus_quarantined(c)],
                         should_rebuild_extraction=(
                             should_rebuild
                         ),
@@ -1111,18 +1158,21 @@ class ExtractionAgent:
                     )
                 )
                 # Fichas YA excluidas de forma determinista (Paso 1,
-                # intento 1) NUNCA se pasan al clasificador LLM de
-                # relevancia -- ni gastan una llamada innecesaria, ni
-                # arriesgan que su include_in_state_of_art/relevance_
-                # level/task_type sean sobrescritos por una
-                # reclasificación que no las considera. Se recombinan
-                # aquí, preservadas intactas, en su posición original.
+                # intento 1) o ya QUARANTINADAS en FASE 1 de pre-
+                # eligibilidad (título irrecuperable/evidencia
+                # insuficiente -- ver corpus_eligibility.py) NUNCA se
+                # pasan al clasificador LLM de relevancia -- ni gastan
+                # una llamada innecesaria, ni arriesgan que su
+                # include_in_state_of_art/relevance_level/task_type
+                # sean sobrescritos por una reclasificación que no las
+                # considera. Se recombinan aquí, preservadas intactas,
+                # en su posición original.
                 classified_by_source = {
                     str(c.get("source_filename", "")): c
                     for c in relevance_result["cards"]
                 }
                 cards = [
-                    card if is_review_excluded(card)
+                    card if (is_review_excluded(card) or is_corpus_quarantined(card))
                     else classified_by_source.get(str(card.get("source_filename", "")), card)
                     for card in cards
                 ]
@@ -1218,10 +1268,19 @@ class ExtractionAgent:
             )
             if eligibility_result["quarantine_audit_rows"]:
                 kb_should_recreate = True
-                self.dependencies.save_jsonl(
-                    cards,
-                    paths["CARDS_JSONL_PATH"],
-                )
+            # El JSONL se guarda SIEMPRE aquí, incondicionalmente --
+            # antes solo se guardaba si había QUARANTINE nuevas, lo
+            # que dejaba el JSONL en disco con el valor de FASE 1
+            # (CANDIDATE) en vez del valor FINAL de FASE 2 (INCLUDE)
+            # para cualquier corrida sin ninguna card en cuarentena.
+            # corpus_eligibility es el campo canónico que consumen
+            # revision_plan/KB/summary/quality/manifest -- debe
+            # quedar sincronizado en disco siempre, no solo cuando
+            # cambia el conteo de exclusiones.
+            self.dependencies.save_jsonl(
+                cards,
+                paths["CARDS_JSONL_PATH"],
+            )
 
             kb_csv_exists = Path(
                 paths["KB_CSV_PATH"]
@@ -1695,7 +1754,30 @@ class ExtractionAgent:
             )
 
             if reason_codes:
-                if can_manual:
+                # El intento 1 SIEMPRE tiene derecho a un RETRY antes
+                # de cualquier decisión final (HALT/REJECTED/APPROVED_
+                # PENDING_MANUAL_REVIEW) -- histórico: antes de la
+                # pre-eligibilidad documental (FASE 1), el intento 1
+                # NUNCA llegaba hasta aquí con reason_codes de campos
+                # faltantes (siempre retornaba temprano con NEEDS_
+                # REVISION/RETRY, ver el bloque de arriba). Ahora que
+                # el intento 1 SIEMPRE atraviesa este bloque (revision_
+                # rows del camino temprano queda vacío al filtrar
+                # EXCLUDE/QUARANTINE, ver corpus_eligibility.py), este
+                # chequeo restaura exactamente ese comportamiento de
+                # dos intentos para reason_codes que SÍ pueden
+                # repararse con un segundo intento (título ya fue
+                # resuelto en FASE 1 -- solo quedan campos científicos
+                # de fichas ya confirmadas INCLUDE).
+                if agent_input.attempt_number == 1:
+                    quality_status = QualityStatus.NEEDS_REVISION
+                    transition = RequestedTransition(
+                        action=TransitionAction.RETRY,
+                        target_stage=None,
+                        reason_code="NEEDS_REVISION",
+                        requires_human_confirmation=False,
+                    )
+                elif can_manual:
                     quality_status = (
                         QualityStatus.APPROVED_PENDING_MANUAL_REVIEW
                     )
