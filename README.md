@@ -9,8 +9,10 @@ arte** (revisiones de literatura científica) a partir de un corpus de
 artículos proporcionado por el usuario.
 
 Es el soporte de código de una tesis de maestría. Este `README.md` describe
-el **estado real y verificado del código** al momento de esta entrega — no
-un diseño aspiracional.
+el **estado real y verificado del sistema completo** — el repositorio de
+código (`src/`, `tests/`) y los notebooks operativos que lo ejecutan
+(`00_setup_config`, `01_ingesta_memoria_documental`,
+`02_rag_chroma_retriever`, `Corrida_03_a_08`) — no un diseño aspiracional.
 
 ## 2. Problema de investigación
 
@@ -22,26 +24,259 @@ extrapolación o alucinación factual. Los LLM pueden generar texto fluido con
 rapidez, pero sin control adicional no garantizan que cada afirmación esté
 efectivamente respaldada por el corpus.
 
-## 3. Objetivo general del sistema
+## 3. Dos capas operativas, no nueve etapas equivalentes
 
-Diseñar e implementar un pipeline multiagente que:
+El sistema **no** es una cadena única de nueve etapas ejecutadas por el
+mismo mecanismo. Son dos capas distintas, con mecanismos de ejecución
+distintos, que cooperan mediante artefactos en disco:
 
-1. procese un corpus de papers científicos y construya una base de
-   conocimiento estructurada y trazable;
-2. redacte un estado del arte por secciones, citando explícitamente la
-   fuente y el fragmento (`chunk`) de cada afirmación;
-3. verifique automáticamente cada afirmación contra el corpus, clasifique su
-   nivel de soporte y, cuando sea posible, proponga una corrección
-   localizada respaldada por evidencia real;
-4. cierre un ciclo correctivo real entre el redactor y el verificador antes
-   de dar por definitivo el borrador;
-5. evalúe el resultado final con métricas automáticas, un LLM Judge y
-   métricas factuales y de trazabilidad, comparándolo contra un Ground
-   Truth cuando existe.
+**Capa A — preparación del experimento** (tres notebooks, ejecutados
+manualmente, sin protocolo transaccional ni fingerprints):
 
-## 4. Arquitectura multiagente actual
+```text
+00_setup_config.ipynb
+01_ingesta_memoria_documental.ipynb
+02_rag_chroma_retriever.ipynb
+```
 
-El sistema distingue tres capas:
+Configura el experimento, ingesta y valida los documentos, aísla el
+Ground Truth, y construye el índice de recuperación (Chroma) que usará
+la capa siguiente. Requiere decisiones humanas (qué corpus usar, qué
+tema, subir PDFs) y no tiene reintentos automáticos: cada notebook se
+corre una vez, en orden, y valida sus propias precondiciones al
+arrancar.
+
+**Capa B — pipeline científico** (un notebook que invoca al orquestador
+real, con estado persistente, fingerprints y reintentos):
+
+```text
+Corrida_03_a_08.ipynb
+  └── src.orchestration.pipeline_orchestrator
+        └── 03 → 03B → 04 → 05 → 06 ↔ 07 → 08
+```
+
+`Corrida_03_a_08.ipynb` no ejecuta la lógica científica por sí mismo —
+invoca `src.orchestration.pipeline_orchestrator`, que administra el
+estado transaccional (`ADVANCE`/`RETRY`/`RETURN`/`HALT_STAGE`/
+`STOP_PIPELINE`) de las etapas 03 a 08. El ciclo `06 ↔ 07` (sección 12)
+es parte de esa misma capa, no un paso adicional fuera de ella.
+
+Las secciones 4 y 5 describen la Capa A con precisión; la sección 6
+muestra exactamente qué artefactos conectan una capa con la otra; la
+sección 10 describe la Capa B (`Corrida_03_a_08.ipynb`) en detalle.
+
+## 4. Preparación del experimento: notebooks 00–02
+
+**Importante**: 00, 01 y 02 no son tres `StageSpec` idénticos a las etapas
+03–08. Son la capa de preparación documental/configuración, ejecutada
+manualmente notebook por notebook, que produce los insumos que el pipeline
+transaccional (03–08) consume después. No comparten el protocolo
+PREPARE/EXECUTE/COMMIT de la sección 10, ni fingerprints, ni reintentos
+automáticos — su idempotencia depende de que el usuario los ejecute en
+orden y verifique las validaciones que cada uno imprime.
+
+### 00 — Setup y configuración (`00_setup_config.ipynb`)
+
+- Crea un experimento nuevo o retoma/sobrescribe uno existente
+  (`experimento_paper_NN/`), preguntando interactivamente o con valores por
+  defecto.
+- Mantiene `active_experiment.json`, en la raíz de `PROJECT_DIR`, como el
+  **selector** del experimento activo — todo lo que viene después (01, 02,
+  y el pipeline 03–08) lo lee para saber sobre qué experimento operar.
+- Configura el perfil del experimento: tema, alcance, términos de dominio,
+  longitud del estado del arte, idioma, modo de escritura (descriptivo/
+  crítico), enfoque (métodos/resultados/balanceado) y estilo de citas.
+- Centraliza las políticas metodológicas de las etapas siguientes
+  (`EXTRACTION_POLICY`, `QUANTITATIVE_EXTRACTION_POLICY`,
+  `THEMATIC_ANALYSIS_POLICY`, `INGESTION_POLICY`,
+  `OUTLINE_GENERATION_POLICY`, `DRAFT_GENERATION_POLICY`,
+  `VERIFICATION_POLICY`, `EVALUATION_POLICY`) y la política de RAG
+  (incluido el aislamiento de Ground Truth, ver sección 5).
+- Crea/configura la estructura de directorios del experimento
+  (`00_ground_truth/`, PDFs de entrada, textos extraídos, chunks, Chroma,
+  `05_outputs/`).
+- Genera, vía `%%writefile`, los módulos runtime planos que **01 y 02**
+  importan directamente: `src/config.py`, `src/generation_config.py`,
+  `src/rag_policy.py`, `src/experiment_config.py`, `src/prompts.py`,
+  `src/io_utils.py`, `src/pdf_utils.py`, `src/llm_utils.py`,
+  `src/rag_utils.py`. Ver sección 9 sobre por qué esta superficie plana
+  coexiste con el paquete `src/config/` sin conflicto real.
+- Configura la credencial de OpenAI para todo el pipeline
+  (`llm_utils.ensure_openai_key`): variable de entorno →
+  `.runtime_secrets/openai_api_key.txt` local → solicitud interactiva
+  única si ninguna de las anteriores existe. Queda disponible como
+  variable de entorno para 01, 02 y para el pipeline 03–08 (que la lee vía
+  `src/io/credentials.py`).
+- Valida al final, recargando los módulos recién escritos, que las
+  políticas necesarias estén completas (claves requeridas presentes en
+  cada policy) antes de dar el setup por terminado.
+
+### 01 — Ingesta y memoria documental (`01_ingesta_memoria_documental.ipynb`)
+
+- Carga `src/config.py` (el runtime generado por 00) por ruta explícita
+  (`importlib.util.spec_from_file_location`), precisamente para no
+  depender de la resolución de import normal de Python entre ese archivo y
+  el paquete `src/config/` (ver sección 9).
+- Identifica el experimento activo y verifica sus entradas: exactamente un
+  PDF de Ground Truth y los PDFs de referencia (permite subir los que
+  falten si el entorno lo soporta).
+- **Ground Truth físicamente separado del corpus de referencia**: viven en
+  directorios distintos (`00_ground_truth/` vs. el directorio de PDFs de
+  entrada) desde el primer momento.
+- Extrae el texto de los papers de referencia (PyMuPDF) y del Ground
+  Truth.
+- Del Ground Truth extrae **únicamente** la sección real de Literature
+  Review / Related Work (detección de encabezados de sección, filtrando
+  falsos positivos como números de página o pies de página) — nunca el
+  documento completo — junto con sus indicadores de citación (numéricos y
+  autor-año).
+- Divide los papers de referencia en chunks con identificadores únicos
+  (`chunk_id`, `source_filename`).
+- Detecta secciones de revisión (`is_review_section_chunk`) y bibliografía/
+  contenido no sustantivo (`is_bibliography_chunk`) dentro de los propios
+  papers de referencia, y aplica las políticas de exclusión de RAG
+  (`excluded_from_rag`).
+- Genera `chunks_clean_for_rag.csv`/`.jsonl` — el archivo limpio que 02
+  indexará — junto con archivos de auditoría de lo excluido
+  (`chunks_flagged_review_sections.csv`, `chunks_flagged_bibliography.csv`,
+  `chunks_flagged_for_rag_policy.csv`,
+  `chunks_flagged_non_substantive.csv`) y manifiestos
+  (`pdf_validation_manifest.csv`, `references_text_manifest.csv`).
+
+**El Ground Truth nunca entra a `chunks_clean_for_rag` y nunca se usa como
+evidencia de generación** — sus artefactos (`ground_truth_full_text.txt`,
+`ground_truth_literature_review.txt`, metadatos y citas) quedan en
+`00_ground_truth/`, un directorio distinto al que 02 indexa.
+
+### 02 — Construcción de RAG con ChromaDB (`02_rag_chroma_retriever.ipynb`)
+
+- Carga la configuración del experimento activo producida por 00 (incluida
+  la credencial de OpenAI ya configurada).
+- Carga **únicamente** `chunks_clean_for_rag.csv` — nunca ningún archivo
+  del Ground Truth.
+- **Valida explícitamente que no haya Ground Truth dentro del archivo**
+  antes de indexar: revisa que ningún chunk tenga
+  `is_review_section_chunk`/`is_bibliography_chunk`/`excluded_from_rag` en
+  `True`, ni texto vacío, ni un `source_filename` que sugiera Ground Truth
+  — si encuentra cualquiera de esas condiciones, se detiene con error en
+  vez de indexar.
+- Reconstruye la colección Chroma oficial del experimento: elimina
+  primero cualquier colección con nombres prohibidos/deprecados
+  (`ground_truth_refs` está explícitamente bloqueado — el código rechaza
+  incluso *nombrar* la colección oficial así) y la colección anterior del
+  mismo experimento, antes de recrearla desde cero.
+- Calcula embeddings (`sentence-transformers`) e indexa los chunks
+  permitidos, conservando `source_filename` y `chunk_id` como metadatos de
+  cada entrada — la trazabilidad que toda cita posterior del sistema
+  reutiliza.
+- Genera `chroma_index_manifest.json`.
+- Expone el retriever (con diversidad y trazabilidad) que las etapas
+  posteriores usan transversalmente, y corre pruebas/auditorías de
+  recuperación sobre el propio notebook antes de darlo por válido.
+
+**Principio verificado en el código, no solo documentado**:
+
+```text
+PDFs de referencia → extracción → chunks → filtrado → chunks_clean_for_rag → Chroma
+```
+
+**Nunca**:
+
+```text
+Ground Truth → Chroma
+```
+
+## 5. Ground Truth: aislamiento verificado en tres puntos independientes
+
+1. **01**: Ground Truth y PDFs de referencia viven en directorios
+   distintos desde la ingesta; del Ground Truth solo se extrae su sección
+   de Literature Review/Related Work, nunca se convierte en chunks para
+   RAG.
+2. **02**: antes de indexar, valida activamente que `chunks_clean_for_rag`
+   no contenga ningún indicio de Ground Truth (por las columnas de
+   exclusión y por el propio nombre de archivo), y bloquea explícitamente
+   el nombre de colección `ground_truth_refs`.
+3. **Pipeline 03–08**: Ground Truth se resuelve **exclusivamente** en la
+   etapa 08 (`src/tools/evaluation/ground_truth.py`), para comparar el
+   resultado final — ninguna etapa anterior (03–07) lee ni recibe
+   contenido de Ground Truth, reforzado con listas de rechazo explícitas
+   en varios módulos de `src/tools/` además de la validación de política
+   en `src/adapters/verification_orchestrator_runtime.py`.
+
+## 6. Cómo se conectan los notebooks 00–02 con el pipeline 03–08
+
+```text
+00 · Configuración del experimento
+      │
+      ├── active_experiment.json
+      ├── políticas
+      ├── parámetros del experimento
+      ├── configuración runtime
+      └── estructura de directorios
+      │
+      ▼
+01 · Ingesta y memoria documental
+      │
+      ├── validación de PDFs
+      ├── extracción de texto
+      ├── Ground Truth separado
+      ├── chunking
+      ├── exclusiones para RAG
+      └── chunks_clean_for_rag
+      │
+      ▼
+02 · Chroma / RAG
+      │
+      ├── embeddings
+      ├── índice vectorial
+      ├── metadatos source_filename + chunk_id
+      ├── manifest del índice
+      └── retriever
+      │
+      ▼
+Corrida_03_a_08.ipynb
+      │
+      ├── sincronización del código
+      ├── pre-flight
+      └── PipelineOrchestrator
+              │
+              ├── 03 Extracción científica
+              ├── 03B Extracción cuantitativa
+              ├── 04 Análisis temático
+              ├── 05 Generación del esquema
+              ├── 06 Redacción
+              ├── 07 Verificación y trazabilidad
+              └── 08 Evaluación
+```
+
+Este diagrama es la secuencia de **preparación → arranque**, no una
+cadena de nueve `StageSpec` iguales: los tres primeros bloques son
+Capa A (notebooks, sin estado transaccional); todo lo que cuelga de
+`PipelineOrchestrator` es Capa B, administrada por
+`src.orchestration.pipeline_orchestrator` con fingerprints, reintentos y
+transiciones explícitas (sección 19).
+
+**Qué artefacto concreto cruza cada frontera** (no son los notebooks en
+sí los que se comunican, son estos archivos en disco):
+
+- `00 → 01`: `active_experiment.json` (selector del experimento activo)
+  + las políticas y la estructura de directorios que 00 deja escritos —
+  01 falla explícitamente si `active_experiment.json` o los módulos
+  runtime que 00 genera no existen.
+- `01 → 02`: `chunks_clean_for_rag.csv`/`.jsonl` + sus manifiestos de
+  auditoría — 02 rechaza continuar si ese archivo no existe o no pasa su
+  validación de Ground Truth.
+- `02 → Corrida_03_a_08.ipynb`: la colección Chroma persistente +
+  `chroma_index_manifest.json` — la Capa B recupera evidencia contra esa
+  colección ya construida, nunca reconstruye el índice por sí misma.
+- `Corrida_03_a_08.ipynb → PipelineOrchestrator (03 en adelante)`: a
+  partir de aquí ya no hay archivos que un notebook anterior "entregue"
+  al siguiente — todo se coordina por artefactos dentro de
+  `{experimento}/05_outputs/` y el estado transaccional en
+  `pipeline_state.json` (secciones 11 y 19), propio del `StateStore`/
+  fingerprints del orquestador.
+
+## 7. Arquitectura del pipeline 03–08
 
 ### Agentes (lógica científica de cada etapa)
 
@@ -81,380 +316,227 @@ similitud semántica, BERTScore, auditoría numérica, auditoría de claims y
 citas, LLM Judge) ensamblados por `src/tools/evaluation/evaluation_pipeline.py`
 y conectados al contrato transaccional mediante
 `src/adapters/evaluation_orchestrator_runtime.py`. La diferencia con los
-agentes 02-07 es deliberada: 08 no toma una decisión científica única y
+agentes 03-07 es deliberada: 08 no toma una decisión científica única y
 reintentable como los agentes — compone y persiste métricas.
 
-## 5. Flujo completo
-
-```text
-00 → 01 → 02 → 03 → 03B → 04 → 05 → 06 → 07 ↔ 06 → 07 → 08
-```
+## 8. El pipeline científico (etapas 03–08) — qué hace cada una
 
 | Etapa | Nombre | Qué hace |
 |---|---|---|
-| 00 | Orquestación y planificación | Prepara el experimento, resuelve configuración común, inicializa `pipeline_state.json`. |
-| 01 | Ingesta y preparación documental | Organiza los PDF de entrada, produce chunks limpios para RAG. |
-| 02 | Extracción de información científica | Construye fichas por paper (problema, métodos, datasets, resultados, limitaciones). |
-| 03 | Extracción de KB | Consolida las fichas en una base de conocimiento estructurada. |
+| 03 | Extracción de KB y Corpus Eligibility | Construye fichas por paper (problema, métodos, datasets, resultados), clasifica cada documento en `INCLUDE`/`EXCLUDE`/`QUARANTINE` (ver sección 8.1) y consolida las fichas `INCLUDE` en la base de conocimiento estructurada. |
 | 03B | Extracción cuantitativa | Identifica y normaliza métricas y resultados numéricos, vinculados a paper y chunk. |
 | 04 | Análisis temático | Agrupa métodos/datasets/resultados en temas y comparaciones. |
 | 05 | Generación del esquema | Convierte el análisis temático en la estructura de secciones del estado del arte. |
-| 06 | Redacción del borrador | Redacta cada sección citando `[fuente.pdf \| chunk_id]`, con RAG real. |
+| 06 | Redacción del borrador | Redacta cada sección citando `[fuente.pdf \| chunk_id]`, con RAG real contra la colección construida en 02. |
 | 07 | Verificación factual y trazabilidad | Descompone el borrador en claims, verifica cada uno contra el corpus, clasifica veredicto y elegibilidad de corrección. |
 | 08 | Evaluación experimental | Compara contra Ground Truth con métricas automáticas, LLM Judge y métricas factuales; persiste los 15 outputs finales. |
 
-## 6. El ciclo correctivo 06 ↔ 07
+### 8.1. Corpus Eligibility Gate (etapa 03) — dos fases
 
-07 no es un simple validador de paso único. Cuando encuentra un claim
-`PARTIALLY_SUPPORTED` con evidencia real disponible, construye una
-propuesta de corrección localizada (`propose_correction`) y, si la acepta,
-emite una transición **`RETURN`** hacia 06 en vez de `ADVANCE`:
+Un documento individual no útil o no validable nunca detiene el corpus
+completo. `src/tools/extraction/corpus_eligibility.py` clasifica cada
+ficha en dos fases sucesivas, ambas antes de que el quality gate
+científico (campos como `target_domain`/`methods_or_models`/`main_results`)
+se aplique:
+
+- **Fase 1 — pre-elegibilidad** (justo después del repair de título,
+  antes de la clasificación de relevancia): review ya confirmado →
+  `EXCLUDE`; título irrecuperable o evidencia insuficiente → `QUARANTINE`;
+  el resto → `CANDIDATE`, continúa a fase 2.
+- **Fase 2 — elegibilidad final** (después de la clasificación de
+  relevancia): fuera de scope/dominio excluido → `EXCLUDE`; relevancia
+  indeterminable → `QUARANTINE`; el resto → `INCLUDE`.
+
+Solo `INCLUDE` entra al plan de revisión científico y puede requerir
+retry por campos faltantes. `EXCLUDE`/`QUARANTINE` nunca aparecen ahí, y
+quedan auditados en `scientific_cards_quarantine_audit.csv` /
+`scientific_cards_review_exclusion_audit.csv`. Stage03 solo hace `HALT`
+global por una condición sistémica — el corpus elegible (`INCLUDE`) cae
+por debajo de `extraction_policy.corpus_eligibility_policy.min_include_
+corpus_size` (default 1) — nunca por un documento individual.
+
+`extraction_policy.exclude_reviews` es `True` por defecto para todo
+experimento nuevo (política metodológica: reviews/surveys completos no
+forman parte del corpus de generación) — sigue siendo configurable
+explícitamente. `target_domain` solo se exige como campo crítico para
+papers que reclaman un dominio de aplicación concreto — un paper
+metodológico/fundacional no se bloquea por carecer de un dominio que su
+contribución no reclama, y nunca se le inventa uno.
+
+## 9. Superficies de configuración: `src/config.py` y `src/config/`
+
+`src/config.py` (archivo plano) y `src/config/` (paquete, con
+`generation_policy_config.py` y las policies de cada etapa) coexisten
+deliberadamente, con consumidores reales y distintos:
+
+- `src/config.py` (y los módulos planos hermanos listados en la sección
+  4) los escribe **00** y los consumen **01 y 02** — la capa de
+  preparación documental, ejecutada por notebook, fuera del orquestador.
+  `01` incluso carga `src/config.py` por ruta explícita
+  (`importlib.util.spec_from_file_location`) precisamente para no
+  depender de cómo Python resolvería el import si solo escribiera
+  `import config` — una decisión de diseño explícita en el propio
+  código, no un descuido.
+- `src/config/` (el paquete) lo consume el pipeline transaccional
+  (`src/orchestration/`, `src/adapters/`, `src/agents/`, `src/tools/`) —
+  valida y aplica defaults canónicos (ver sección 8.1) que la capa plana
+  no necesita replicar.
+
+Ambas superficies aplican la misma política de aislamiento de Ground
+Truth cada una en su propio código — no es una duplicación accidental
+sin resolver, sino dos capas con responsabilidades y consumidores
+distintos que hoy coinciden en esa política. La fuente de verdad para
+todo lo que ejecuta el orquestador (03→08 vía `StateStore`/`StageSpec`)
+es siempre `active_experiment.json`, nunca los módulos planos.
+
+## 10. `Corrida_03_a_08.ipynb` — cómo se ejecuta el pipeline científico en la práctica
+
+Es la forma operativa real con la que se ejecuta el sistema hoy. Hace, en
+orden:
+
+### 1. Sincroniza el código
+
+Clona una copia fresca del repositorio de GitHub en un directorio aparte,
+y hace *overlay* (`shutil.copytree`/`copy2`) sobre `/content/proyecto_
+estado_arte`, excluyendo explícitamente `.git`, `active_experiment.json`,
+`venv_estado_arte`, y cualquier carpeta `experimento_paper_*`. Por
+construcción, actualizar el código con esta celda **nunca** borra
+experimentos existentes ni cambia el experimento activo seleccionado.
+Cualquier edición local no confirmada en GitHub, en cambio, se pierde en
+este paso — el código real que se ejecuta siempre es el que está en el
+repositorio remoto, no el que pudiera haberse editado directamente en la
+sesión de Colab.
+
+### 2. Verifica/prepara el entorno
+
+Crea el entorno virtual en `/content/venv_estado_arte` si no existe,
+sincroniza `requirements.txt` (`pip install` + `pip check`), y confirma
+en caliente que el Python del venv puede importar las dependencias
+básicas. Todo lo que sigue usa el Python de ese venv, nunca el global.
+
+### 3. Pre-flight del experimento
+
+Antes de tocar 03–08: lee `active_experiment.json`, resuelve el
+directorio del experimento activo, y lista los PDFs de referencia
+recorriendo el directorio del experimento **excluyendo siempre** el
+subdirectorio de Ground Truth. También fija explícitamente dos políticas
+operativas de esta corrida concreta antes de arrancar:
+`evaluation_policy.allow_partial_halt_evaluation = True` (ver punto 5) y
+`draft_generation_policy.draft_representation_contract =
+"canonical_sentences_v2"`, con verificación fail-closed de que quedó
+persistido.
+
+### 4. Ejecuta el pipeline científico mediante el orquestador
+
+El notebook invoca el orquestador real:
+
+```bash
+python -m src.orchestration.pipeline_orchestrator \
+  --project-dir /content/proyecto_estado_arte \
+  --start-stage 03_agente_extraccion_kb \
+  --until 08_evaluacion_experimental
+```
+
+El **orquestador**, no el notebook, administra estado persistente,
+fingerprints, freshness, reintentos, transiciones
+(`ADVANCE`/`RETRY`/`RETURN`/`HALT_STAGE`/`STOP_PIPELINE`), reutilización
+de artefactos vigentes, e invalidación de etapas dependientes. El
+notebook solo lanza el comando y lee su código de salida — si es
+distinto de cero, se detiene con un error explícito, sin recomendar
+`--force-rerun` a ciegas.
+
+### 5. `PARTIAL_HALT` en verificación — nunca implica aprobación para publicación
+
+Si 07 emite un `HALT_STAGE` por agotamiento científico del ciclo
+06↔07 (ver sección 12) mientras el resultado sigue siendo válido como
+objeto experimental, el notebook comprueba si `agent07_runtime_report.
+json` existe y si `allow_partial_halt_evaluation` está en `True` (lo
+fija así en el paso 3, para esta corrida). Si ambas condiciones se
+cumplen, **solicita** al orquestador que ejecute la etapa 08 por
+separado:
+
+```bash
+python -m src.orchestration.pipeline_orchestrator \
+  --project-dir /content/proyecto_estado_arte \
+  --start-stage 08_evaluacion_experimental \
+  --until 08_evaluacion_experimental
+```
+
+El propio orquestador decide si realmente la ejecuta o la reconoce como
+`SKIPPED_FRESH` — el notebook nunca asume que un `evaluation_summary.
+json` previo sigue vigente. Esto **no es un bypass arbitrario** del
+verificador: la política del pipeline (el flag explícito en
+`evaluation_policy`) es la que determina si la evaluación está permitida
+tras un halt científico, y el `decision_log` de 07 nunca se reescribe —
+su entrada sigue diciendo `HALT_STAGE` igual que antes.
+
+**Distinción explícita que el propio manifest de evaluación persiste**
+(`evaluation_manifest.json["pipeline_outcome"]`): `approved_for_
+publication` y `usable_for_evaluation` son campos separados. Un
+resultado puede no estar listo para publicación (`approved_for_
+publication=false`) pero seguir siendo un objeto experimental válido
+para la etapa 08 (`usable_for_evaluation=true`) — son dos preguntas
+distintas, y el notebook las imprime por separado en su resumen final,
+nunca las combina en una sola.
+
+### 6. Resume el estado final
+
+Lee `evaluation_summary.json` y `evaluation_manifest.json` y muestra:
+resultado global, palabras generadas, palabras del Ground Truth,
+métricas automáticas, puntajes del LLM Judge, métricas factuales, y el
+`pipeline_outcome` completo (incluidos `verification_approved`,
+`human_review_required`, `approved_for_publication`,
+`usable_for_evaluation`, `agent07_halt_reason`).
+
+### 7. Consolida resultados para tesis
+
+La última celda **no vuelve a generar ciencia ni cambia ningún
+resultado** — solo reorganiza y copia artefactos ya producidos por 03–08
+hacia `{experimento}/05_outputs/08_final_results/`:
 
 ```text
-06 redacta
-   ↓
-07 verifica -> claim corregible con evidencia real
-   ↓
-RETURN a 06, con una "writer_revision_request" trazable
-   ↓
-06 entra en modo REVISION: corrige SOLO la sección/claim señalado,
-   el resto del borrador queda intacto
-   ↓
-07 reverifica el borrador corregido
-   ↓
-si el claim ya es SUPPORTED -> ADVANCE hacia 08
+estado_del_arte_generado.md / .json
+resumen_experimento.csv
+metricas_evaluacion.csv
+trazabilidad_claims_final.csv
+tabla_comparativa_papers.csv
+resumen_por_seccion.csv
+gaps_y_limitaciones.csv
+resumen_resultado_final.xlsx
 ```
 
-Este ciclo se persiste en disco de forma transaccional en
-`writer_verifier_cycle/round_NN/` (ver sección 17) — 07 crea la ronda en
-`AWAITING_REVISION`, 06 la completa (nunca la crea) a `REVISION_COMPLETED`,
-y un segundo intento de completar la misma ronda se rechaza explícitamente
-(no hay doble escritura silenciosa).
+y empaqueta esa carpeta en un `.zip` descargable. Es consolidación y
+presentación para la tesis, no una re-ejecución del pipeline.
 
-### `07C`: excluido del flujo activo
+## 11. Outputs principales
 
-`07C` (reverificación de una corrección ya aplicada automáticamente) **no
-forma parte del flujo activo**. La ruta real es `07 → 06 (RETURN) → 07`
-directamente, sin pasar por 07C. El código conserva compatibilidad
-histórica con 07C únicamente en `src/adapters/agent07c_handoff.py` y
-mensajes/nombres de archivo heredados donde era inevitable — su presencia
-en el código no significa que participe del registro de etapas activo
-(`STAGE_ORDER` en `src/orchestration/pipeline_orchestrator.py` no lo
-incluye).
+### Etapa 01 (ingesta)
 
-### Identidad estable de claims (`claim_uid`)
+- `chunks_clean_for_rag.csv`/`.jsonl` — la entrada oficial de 02.
+- `chunks_flagged_review_sections.csv`, `chunks_flagged_bibliography.csv`,
+  `chunks_flagged_for_rag_policy.csv`,
+  `chunks_flagged_non_substantive.csv` — auditoría de lo excluido.
+- `pdf_validation_manifest.csv`, `references_text_manifest.csv`.
+- En `00_ground_truth/`: `ground_truth_full_text.txt`,
+  `ground_truth_literature_review.txt`,
+  `ground_truth_literature_review_metadata.json`,
+  `ground_truth_literature_review_citation_ids.json`,
+  `ground_truth_literature_review_author_year_citations.json`.
 
-`claim_id` (ej. `S5_C2`) es **posicional**: 06 lo recalcula cada vez que
-regenera una sección completa en modo `REVISION` (regenera la sección
-entera si tiene algún issue, no solo el claim señalado), así que la misma
-etiqueta puede referirse a afirmaciones distintas entre rondas. Para
-rastrear un claim de forma confiable entre rondas, cada claim tiene además:
+### Etapa 02 (RAG)
 
-- `claim_uid`: UUID4 opaco, minteado una sola vez, nunca recalculado por
-  contenido ni posición.
-- `claim_version`: entero monótono, se incrementa solo cuando ese claim
-  específico se reescribe.
-- `parent_claim_uids`: linaje explícito — vacío al mintear, un padre en
-  una continuación o *split*, dos o más en un *merge*.
+- Colección Chroma persistente del experimento.
+- `chroma_index_manifest.json`.
 
-La identidad se declara explícitamente por 06 (vía el contrato de
-respuesta del LLM: `identity_action` = `CONTINUE` / `NEW` / `SPLIT_CHILD`
-/ `MERGE`) — nunca se infiere después por similitud de texto. Cuando un
-`writer_revision_request` señala un `claim_uid` concreto, 06 debe
-preservarlo determinísticamente; si el LLM declara una identidad distinta,
-la respuesta se rechaza (fail-closed), nunca se sobreescribe en silencio.
-Ver `src/tools/draft_writing/claim_identity.py`.
+### Etapa 03 (extracción y corpus eligibility)
 
-**Contrato de identidad por experimento** (`CycleState.claim_identity_
-contract_version`, en `pipeline_state.json`): `"LEGACY"` (comportamiento
-posicional, experimentos anteriores a este mecanismo) o `"STABLE_UID_V1"`.
-El contrato se resuelve de forma híbrida — si ya hay uno declarado para el
-ciclo, es normativo (nunca se re-infiere ni se permite un downgrade
-silencioso si algún `claim_uid` se pierde); solo en la primera ronda, sin
-nada declarado todavía, se infiere una vez de los propios claims.
-
-**Migración de un experimento `LEGACY`** ocurre de dos formas, nunca de
-forma implícita:
-1. *Dentro de una ronda real de revisión*: 06 declara una señal explícita
-   (`claim_identity_migration_signal=true` en su `committed_agent06_
-   output`, emitida automáticamente por `agent06_verification_handoff.py`
-   solo cuando el ciclo está en `LEGACY` y **todos** los claims publicados
-   ya tienen `claim_uid`/`claim_version` completos) — cuenta como una
-   ronda normal del ciclo `06 ↔ 07`.
-2. *Bootstrap administrativo* (`src/tools/draft_writing/claim_identity_
-   bootstrap.py::bootstrap_legacy_claim_identity_for_exhausted_cycle`),
-   para un ciclo que **ya agotó sus rondas científicas**
-   (`rounds_used >= max_rounds`) y no puede consumir otra solo para
-   adquirir identidad. Publica una copia nueva del draft (nunca sobrescribe
-   el histórico) con `claim_uid` recién minteado para cada claim —
-   `parent_claim_uids=[]` siempre, nunca se reconstruye una identidad
-   histórica por similitud — y compromete un nuevo resultado de 06 con
-   `ADVANCE → 07` real vía `StateStore`, sin tocar `rounds_used`,
-   `max_rounds`, ni ninguna decisión o claim históricos. Es idempotente:
-   si el ciclo ya es `STABLE_UID_V1`, no hace nada.
-
-### Reconstrucción causal del `decision_log`
-
-`decision_log` es *append-only* y puede acumular ejecuciones espurias
-(ej. reintentos tras un bug de control de flujo ya corregido) — ni
-`decision_log[-1]` ni `state.stages[etapa]` (el estado vigente, que una
-ejecución espuria posterior puede sobrescribir) son fuentes confiables por
-sí solas de "qué fue lo último que realmente pasó". `src/orchestration/
-decision_log_frontier.py` reconstruye la cadena causal real a partir de
-las transiciones que cada decisión solicitó, con dos funciones para dos
-preguntas distintas:
-
-- `authoritative_decision_log_entry_for_stage`: "¿cuál es el estado
-  terminal **vigente** de esta etapa?" — usada para reconocer un restart.
-- `committed_predecessor_for_stage`: "¿cuál fue el **último commit que
-  realmente habilitó** la etapa siguiente?" (`COMPLETED` + `ADVANCE` hacia
-  el target exacto) — usada para resolver una dependencia upstream (ej.
-  qué draft de 06 debe leer 07). Son preguntas distintas a propósito: la
-  primera puede apuntar a una ejecución espuria; la segunda nunca.
-
-`src/adapters/agent06_verification_handoff.py::resolve_committed_agent06_
-artifacts` usa siempre la segunda — es también la función que resuelve el
-draft canónico que lee 08 (ver más abajo), garantizando una única
-definición de "qué comprometió 06 realmente" en toda la cadena 06→07→08.
-
-
-## 7. RAG, memoria documental, KB científica y trazabilidad
-
-- **Memoria documental (etapa 01)**: los PDF de entrada se convierten en
-  chunks limpios, identificados por `(source_filename, chunk_id)` — la
-  unidad atómica de cita en todo el pipeline.
-- **RAG**: 06 recupera evidencia por sección al redactar; 07 puede además
-  hacer una recuperación **independiente** por claim (no solo heredar la
-  evidencia que 06 citó), etiquetando esa evidencia con
-  `usage_role="SUPPORT"` — la única vía productiva real que asigna ese rol
-  concreto (ver `src/adapters/verification_incremental_retriever.py`).
-- **KB científica (etapas 02/03/03B/04)**: fichas por paper, extracción
-  cuantitativa y análisis temático, consolidadas antes de generar el
-  esquema.
-- **Trazabilidad**: toda afirmación del borrador lleva citas internas
-  `[archivo.pdf | chunk_id]`; 07 construye una matriz de trazabilidad
-  completa (`claim_traceability_rows` + `claim_evidence_traceability_rows`
-  + `correction_traceability_rows`) que 08 audita.
-
-## 8. Estructura real de carpetas
-
-```text
-tesis-sistema-multiagente-main/
-├── README.md                    (este archivo)
-├── LEEME_PRIMERO.md              (guía corta operativa)
-├── COLAB_SMOKE_TEST.md           (procedimiento de smoke test real)
-├── requirements.txt
-├── smoke_test.py                 (contrato transaccional genérico, con dobles)
-├── smoke_test_draft.py           (fallo de build_execution -> FAILED, con dobles)
-├── src/
-│   ├── adapters/                 conecta agentes/runtime real con StageSpec
-│   ├── agents/                   lógica científica de cada agente (02-07)
-│   ├── bootstrap/                preparación de proyecto/experimento
-│   ├── capabilities/              capacidades reutilizables (extracción cuantitativa)
-│   ├── config/                   políticas por etapa
-│   ├── contracts/                AgentInput / AgentResult
-│   ├── io/                       escritura atómica, credenciales
-│   ├── orchestration/            StageSpec, run_stage, run_pipeline, decision_engine
-│   ├── runtime/                  protocolos build_execution/runtime_transaction/resolve_resume
-│   ├── state/                    StateStore, PipelineState, fingerprints
-│   └── tools/
-│       ├── draft_writing/        herramientas de la etapa 06
-│       ├── evaluation/           módulos puros de la etapa 08 (ROUGE-L, BERTScore, LLM Judge, ...)
-│       ├── extraction/           herramientas de la etapa 02
-│       ├── outline_generation/   herramientas de la etapa 05
-│       ├── quantitative_extraction/  herramientas de la etapa 03B
-│       ├── thematic_analysis/    herramientas de la etapa 04
-│       └── verification/         herramientas de la etapa 07
-└── tests/
-    ├── orchestration/            suites principales (auto-contenidas, ver sección 13)
-    ├── evaluation/
-    ├── verification/
-    ├── fixtures/
-    ├── integration/
-    ├── v16/
-    └── v17/
-```
-
-**Nota sobre nombres de carpeta**: las carpetas de herramientas usan el
-nombre completo de cada etapa (`outline_generation`, `quantitative_extraction`,
-`thematic_analysis`), no abreviaturas — es el nombre real en disco, verificado
-en esta entrega.
-
-## 9. Requisitos
-
-- Python **3.11** (versión exacta validada en el smoke test real de
-  Colab; el código en sí solo requiere `>= 3.10`).
-- Entorno **aislado** vía `virtualenv` — nunca el Python global de Colab.
-  El índice persistente real de Chroma no podía abrirse con `chromadb`
-  `0.5.x` (`KeyError('_type')`); `requirements.txt`/`constraints-colab.txt`
-  fijan `chromadb==1.5.9`, la única versión confirmada funcional.
-- Versiones exactas confirmadas (`pip check` sin dependencias rotas):
-  `langchain-core==0.3.86`, `langchain-openai==0.3.35`, `openai==1.109.1`,
-  `chromadb==1.5.9`, `transformers==4.46.3`, `tokenizers==0.20.3`,
-  `huggingface-hub==0.36.2`, `sentence-transformers==5.7.0`,
-  `bert-score==0.3.13`, `numpy==2.4.6`, `pandas==3.0.5`,
-  `scikit-learn==1.9.0`, `matplotlib==3.11.1`, `PyMuPDF==1.28.2`,
-  `rouge-score==0.1.2`, `tabulate==0.10.0`, `cryptography==46.0.7`,
-  `torch==2.13.0`. Ver `requirements.txt` (pines exactos) y
-  `constraints-colab.txt` (mismas versiones, como restricción explícita
-  adicional).
-
-## 10. Instalación
-
-Entorno aislado real (recomendado, el que efectivamente se validó):
-
-```bash
-git clone <repo> /content/proyecto_estado_arte
-bash /content/proyecto_estado_arte/scripts/setup_colab.sh
-```
-
-`scripts/setup_colab.sh` crea el virtualenv en `/content/venv_estado_arte`
-(configurable con `VENV_DIR`), instala `requirements.txt` con
-`constraints-colab.txt` como restricción explícita (`-c`), corre
-`pip check`, y verifica en caliente que `chromadb`/`transformers`/
-`tokenizers` queden en las versiones exactas confirmadas. A partir de ahí,
-todo se ejecuta con el Python del venv, nunca el global:
-
-```bash
-/content/venv_estado_arte/bin/python -m src.orchestration.pipeline_orchestrator --project-dir /content/proyecto_estado_arte
-# o, equivalente, vía el wrapper que ya fija MPLBACKEND=Agg, el venv y
-# --project-dir (usa THESIS_PROJECT_DIR/ESTADO_ARTE_PYTHON si se
-# necesita otra ruta) -- cualquier flag adicional, incluido --start-stage,
-# se pasa transparentemente al orquestador real:
-python3 scripts/run_pipeline.py --start-stage 07_agente_verificador
-```
-
-Instalación mínima sin venv (solo para desarrollo/tests fuera de Colab,
-sin garantía de las versiones exactas de Chroma/torch):
-
-```bash
-python3 -m pip install -r requirements.txt
-```
-
-Para el procedimiento completo de instalación + smoke test en Colab, ver
-`COLAB_SMOKE_TEST.md`.
-
-## 11. Configuración de `OPENAI_API_KEY`
-
-`src/io/credentials.py` resuelve credenciales en este orden:
-
-1. Variable de entorno `OPENAI_API_KEY`, si está definida.
-2. Dentro de Google Colab, `google.colab.userdata` (el "Secrets" del
-   notebook) — este camino se importa de forma diferida y solo se activa si
-   el módulo `google.colab` existe.
-3. Un archivo cifrado local (vía `cryptography.fernet.Fernet`), para uso
-   fuera de Colab sin exponer la clave en texto plano.
-
-Fuera de Colab, la vía más simple es:
-
-```bash
-export OPENAI_API_KEY="sk-..."
-```
-
-## 12. Formato esperado de `active_experiment.json`
-
-Debe existir en la raíz de `PROJECT_DIR` (fuera de la carpeta del
-experimento), con al menos:
-
-```json
-{
-  "active_experiment_id": "exp_paper_02",
-  "run_id": "run_2026_08_07",
-  "evaluation_policy": { "...": "..." }
-}
-```
-
-- `active_experiment_id` es **obligatorio** — sin él, `run_pipeline()`
-  lanza `FileNotFoundError` indicando que falta correr la etapa 00.
-- `run_id` es opcional; si falta, se usa el mismo valor que
-  `active_experiment_id`.
-- `evaluation_policy` es **obligatorio para llegar a la etapa 08** — debe
-  ser un diccionario no vacío (`build_execution_for_stagespec` lo valida
-  explícitamente y lanza `ValueError` si falta o está vacío). No tiene
-  valores por defecto silenciosos.
-- El directorio del experimento se resuelve como
-  `PROJECT_DIR/{active_experiment_id}/`.
-
-## 13. Cómo ejecutar pruebas
-
-**No uses `pytest` para `tests/orchestration/`.** Verificado empíricamente:
-esas suites usan un decorador `@scenario` que captura toda excepción
-internamente y la registra en una lista `RESULTS` sin relanzarla — bajo
-`pytest`, cada función `test_*` termina sin excepción y se marca `passed`
-**aunque la aserción interna haya fallado realmente**. El corredor
-confiable es ejecutar cada archivo directamente:
-
-```bash
-python3 tests/orchestration/test_writer_revision_cycle_core.py
-python3 tests/orchestration/test_writer_verifier_cycle_e2e.py
-python3 tests/orchestration/test_writer_verifier_round_conflict_integration.py
-python3 tests/orchestration/test_agent07_manifest_conditional.py
-python3 tests/orchestration/test_verification_claim_canonicalization.py
-python3 tests/orchestration/test_verification_numeric_risk_characterization.py
-python3 tests/orchestration/test_qualitative_correction_keyerror_and_return.py
-```
-
-Cada archivo imprime `N/N escenarios OK` y termina con código de salida 0
-si todo pasó. Para correr **todas** las suites de `tests/orchestration/`:
-
-```bash
-for f in tests/orchestration/test_*.py; do python3 "$f" || echo "FALLÓ: $f"; done
-```
-
-Estado verificado en esta entrega: **468/468** en 37 suites.
-
-## 14. Cómo ejecutar el pipeline
-
-```bash
-python3 -m src.orchestration.pipeline_orchestrator --project-dir /ruta/a/PROJECT_DIR
-```
-
-`run_pipeline()` no es un `for` fijo sobre las etapas: interpreta la
-`RequestedTransition` real que devuelve cada etapa (`ADVANCE`, `RETRY`,
-`RETURN`, `HALT_STAGE`, `STOP_PIPELINE`). Por eso el mismo comando cubre el
-ciclo `06 ↔ 07` sin ningún flag especial: si 07 emite `RETURN`, el bucle
-vuelve a 06 automáticamente; cuando 07 finalmente emite `ADVANCE`, sigue
-hacia 08.
-
-### Ejecutar hasta una etapa específica
-
-```bash
-python3 -m src.orchestration.pipeline_orchestrator --project-dir /ruta/a/PROJECT_DIR --until 07_agente_verificador
-```
-
-`--until` acepta cualquier clave de `STAGE_ORDER` y detiene el bucle apenas
-esa etapa produce un resultado (incluso si pedía `ADVANCE`).
-
-### Usar `--force-rerun`
-
-```bash
-python3 -m src.orchestration.pipeline_orchestrator --project-dir /ruta/a/PROJECT_DIR --force-rerun
-```
-
-Reejecuta la etapa inicial (`--until` o la primera) aunque ya esté
-`COMPLETED` y vigente según fingerprints en `pipeline_state.json`. Las
-etapas alcanzadas después por `ADVANCE`/`RETRY`/`RETURN` siguen evaluando
-sus propios fingerprints normalmente — `--force-rerun` no las fuerza a
-todas.
-
-### Retomar el pipeline en una etapa específica: `--start-stage`
-
-```bash
-python3 -m src.orchestration.pipeline_orchestrator --project-dir /ruta/a/PROJECT_DIR --start-stage 07_agente_verificador
-```
-
-Arranca el recorrido directamente en la etapa indicada, en vez de la
-primera de `STAGE_ORDER` — ejecuta **únicamente** esa etapa y las que
-resulten de sus transiciones reales, nunca las anteriores. A diferencia
-de `--force-rerun`, no ignora fingerprints por defecto: si la etapa ya
-está `COMPLETED` y vigente, se reconoce `SKIPPED_FRESH` con normalidad; si
-su último commit fue `FAILED` (ej. tras un `HALT_STAGE`), esto la
-reintenta con un `decision_id` nuevo, sin tocar ninguna etapa previa. Es
-la vía oficial para reintentar una sola etapa desde un estado terminal
-(ver `scripts/run_pipeline.py`, que pasa cualquier flag adicional
-transparentemente al orquestador real, incluido este).
-
-## 15. Outputs principales
+- `scientific_cards.jsonl` — todas las fichas, con `corpus_eligibility`
+  (`INCLUDE`/`EXCLUDE`/`QUARANTINE`) persistido para cada una.
+- `scientific_cards_revision_plan.csv` — solo fichas `INCLUDE` inválidas.
+- `scientific_cards_review_exclusion_audit.csv`,
+  `scientific_cards_quarantine_audit.csv`.
+- `scientific_cards_quality_check.csv`, `extraction_retrieval_trace.csv`,
+  `scientific_knowledge_base.{csv,jsonl}`, `scientific_extraction_manifest.json`.
 
 ### Etapa 06 (borrador)
 
@@ -465,9 +547,7 @@ transparentemente al orquestador real, incluido este).
 ### Etapa 07 (verificación)
 
 Cuatro artefactos científicos incondicionales, más uno condicional, en
-`PROJECT_DIR/{active_experiment_id}/05_outputs/06_verification_traceability/`
-(nombre de carpeta heredado del notebook original, no de la clave del
-`StageSpec`):
+`{experimento}/05_outputs/06_verification_traceability/`:
 
 ```text
 provisional_verification_traceability_bundle.json
@@ -479,8 +559,7 @@ writer_revision_request.json      (SOLO si la transición es RETURN)
 
 ### Etapa 08 — los 15 outputs obligatorios de evaluación
 
-En `PROJECT_DIR/{active_experiment_id}/05_outputs/07_evaluation/` (mismo
-motivo de numeración heredada):
+En `{experimento}/05_outputs/07_evaluation/`:
 
 ```text
  1. automatic_metrics.csv
@@ -501,198 +580,231 @@ motivo de numeración heredada):
 ```
 
 `agent08_upstream_numeric_check.csv` **no** es uno de los 15 — es un
-artefacto intermedio que 08 sobrescribe internamente, no un output final
-auditado (`src/adapters/evaluation_persistence.py`,
-`INTERMEDIATE_NUMERIC_CHECK_FILENAME`).
+artefacto intermedio que 08 sobrescribe internamente.
 
-## 16. Ubicación de `pipeline_state.json`
+### Consolidación final (`Corrida_03_a_08.ipynb`, paso 7)
 
-```text
-PROJECT_DIR/{active_experiment_id}/05_outputs/00_orchestrator_planner/pipeline_state.json
-```
+En `{experimento}/05_outputs/08_final_results/`, ver sección 10.7.
 
-Es el estado transaccional canónico de **todo** el pipeline (todas las
-etapas comprometidas, sus fingerprints, su `AgentResult` persistido).
+## 12. El ciclo correctivo 06 ↔ 07
 
-## 17. Ubicación de `writer_verifier_cycle/round_NN`
+07 no es un simple validador de paso único. Cuando encuentra un claim
+`PARTIALLY_SUPPORTED` con evidencia real disponible, construye una
+propuesta de corrección localizada y, si la acepta, emite una transición
+**`RETURN`** hacia 06 en vez de `ADVANCE`:
 
 ```text
-PROJECT_DIR/{active_experiment_id}/05_outputs/writer_verifier_cycle/round_01/
+06 redacta
+   ↓
+07 verifica -> claim corregible con evidencia real
+   ↓
+RETURN a 06, con una "writer_revision_request" trazable
+   ↓
+06 entra en modo REVISION: corrige SOLO la sección/claim señalado,
+   el resto del borrador queda intacto
+   ↓
+07 reverifica el borrador corregido
+   ↓
+si el claim ya es SUPPORTED -> ADVANCE hacia 08
+si el ciclo agota sus rondas sin aprobación completa -> HALT_STAGE (ver sección 10.5)
 ```
 
-Cada ronda del ciclo 06↔07 vive en su propia carpeta numerada, con al
-menos:
+Este ciclo se persiste en disco de forma transaccional en
+`writer_verifier_cycle/round_NN/` — 07 crea la ronda en
+`AWAITING_REVISION`, 06 la completa (nunca la crea) a `REVISION_COMPLETED`,
+y un segundo intento de completar la misma ronda se rechaza explícitamente.
+
+### Identidad estable de claims (`claim_uid`)
+
+`claim_id` (ej. `S5_C2`) es **posicional**: 06 lo recalcula cada vez que
+regenera una sección completa en modo `REVISION`. Para rastrear un claim
+de forma confiable entre rondas, cada claim tiene además `claim_uid`
+(UUID4 opaco, minteado una sola vez), `claim_version` (entero monótono) y
+`parent_claim_uids` (linaje explícito). La identidad se declara
+explícitamente por 06 (`identity_action` = `CONTINUE`/`NEW`/
+`SPLIT_CHILD`/`MERGE`) — nunca se infiere después por similitud de texto.
+Ver `src/tools/draft_writing/claim_identity.py`.
+
+## 13. RAG, memoria documental, KB científica y trazabilidad
+
+- **RAG**: 06 recupera evidencia por sección al redactar contra la
+  colección Chroma construida en 02; 07 puede además hacer una
+  recuperación **independiente** por claim, etiquetando esa evidencia con
+  `usage_role="SUPPORT"` (ver `src/adapters/verification_incremental_
+  retriever.py`).
+- **KB científica (etapas 03/03B/04)**: fichas por paper (solo las
+  `INCLUDE`, ver sección 8.1), extracción cuantitativa y análisis
+  temático, consolidadas antes de generar el esquema.
+- **Trazabilidad**: toda afirmación del borrador lleva citas internas
+  `[archivo.pdf | chunk_id]` — la misma unidad atómica que 01 asignó y 02
+  indexó; 07 construye una matriz de trazabilidad completa que 08 audita.
+
+## 14. Estructura real de carpetas
 
 ```text
-writer_revision_request.json     (de 07, al crear la ronda)
-input_draft_reference.json       (de 07)
-agent07_result.json              (de 07)
-transition.json                  (de 07)
-fingerprints.json                (de 07)
-revised_draft.json               (de 06, al completar la ronda)
-revision_changelog.json          (de 06)
-revision_resolution_matrix.json  (de 06)
-unresolved_issues.json           (de 06)
-fingerprint.json                 (de 06)
-_round_status.json               (estado interno: AWAITING_REVISION -> REVISION_COMPLETED)
+tesis-sistema-multiagente-main/
+├── README.md                    (este archivo)
+├── LEEME_PRIMERO.md              (guía corta operativa)
+├── requirements.txt
+├── smoke_test.py                 (contrato transaccional genérico, con dobles)
+├── smoke_test_draft.py           (fallo de build_execution -> FAILED, con dobles)
+├── src/
+│   ├── adapters/                 conecta agentes/runtime real con StageSpec
+│   ├── agents/                   lógica científica de cada agente (03-07)
+│   ├── bootstrap/                preparación de proyecto/experimento
+│   ├── capabilities/              capacidades reutilizables (extracción cuantitativa)
+│   ├── config/                   políticas por etapa (paquete, ver sección 9)
+│   ├── config.py                 runtime plano generado por 00 (ver sección 9)
+│   ├── contracts/                AgentInput / AgentResult
+│   ├── io/                       escritura atómica, credenciales
+│   ├── orchestration/            StageSpec, run_stage, run_pipeline, decision_engine
+│   ├── runtime/                  protocolos build_execution/runtime_transaction/resolve_resume
+│   ├── state/                    StateStore, PipelineState, fingerprints
+│   └── tools/
+│       ├── draft_writing/        herramientas de la etapa 06
+│       ├── evaluation/           módulos puros de la etapa 08 (ROUGE-L, BERTScore, LLM Judge, ...)
+│       ├── extraction/           herramientas de la etapa 03 (incluye corpus_eligibility.py, review_exclusion.py)
+│       ├── outline_generation/   herramientas de la etapa 05
+│       ├── quantitative_extraction/  herramientas de la etapa 03B
+│       ├── thematic_analysis/    herramientas de la etapa 04
+│       └── verification/         herramientas de la etapa 07
+└── tests/
+    ├── orchestration/            suites principales (auto-contenidas, ver sección 18)
+    ├── evaluation/
+    ├── verification/
+    ├── fixtures/
+    ├── integration/
+    ├── v16/
+    └── v17/
 ```
 
-## 18. PREPARE / EXECUTE / COMMIT / RESUME
+## 15. Requisitos
+
+- Python **3.11** (versión exacta validada en corridas reales de Colab;
+  el código en sí solo requiere `>= 3.10`).
+- Entorno **aislado** vía `virtualenv` — nunca el Python global de Colab.
+  `requirements.txt`/`constraints-colab.txt` fijan `chromadb==1.5.9`.
+- Versiones exactas confirmadas: `langchain-core==0.3.86`,
+  `langchain-openai==0.3.35`, `openai==1.109.1`, `chromadb==1.5.9`,
+  `transformers==4.46.3`, `tokenizers==0.20.3`,
+  `huggingface-hub==0.36.2`, `sentence-transformers==5.7.0`,
+  `bert-score==0.3.13`, `numpy==2.4.6`, `pandas==3.0.5`,
+  `scikit-learn==1.9.0`, `matplotlib==3.11.1`, `PyMuPDF==1.28.2`,
+  `rouge-score==0.1.2`, `tabulate==0.10.0`, `cryptography==46.0.7`,
+  `torch==2.13.0`.
+
+## 16. Instalación y ejecución operativa (Colab)
+
+```text
+1. Ejecutar 00_setup_config.ipynb          -> crea/selecciona el experimento
+2. Ejecutar 01_ingesta_memoria_documental.ipynb  -> chunks_clean_for_rag
+3. Ejecutar 02_rag_chroma_retriever.ipynb  -> índice Chroma listo
+4. Ejecutar Corrida_03_a_08.ipynb          -> sincroniza código, corre 03-08, consolida
+```
+
+Instalación mínima sin venv, solo para desarrollo/tests fuera de Colab:
+
+```bash
+python3 -m pip install -r requirements.txt
+```
+
+## 17. Formato esperado de `active_experiment.json`
+
+Debe existir en la raíz de `PROJECT_DIR` (fuera de la carpeta del
+experimento):
+
+```json
+{
+  "active_experiment_id": "experimento_paper_02",
+  "experiment_dir": "/content/proyecto_estado_arte/experimento_paper_02",
+  "evaluation_policy": { "...": "..." }
+}
+```
+
+- `active_experiment_id`/`experiment_dir` son obligatorios — sin ellos,
+  ni el pre-flight de `Corrida_03_a_08` ni `run_pipeline()` pueden
+  resolver el experimento.
+- `evaluation_policy` es **obligatorio para llegar a la etapa 08** — debe
+  ser un diccionario no vacío. No tiene valores por defecto silenciosos.
+- `extraction_policy` es opcional — si se omite (o se omiten campos como
+  `exclude_reviews`/`corpus_eligibility_policy`), la política
+  metodológica canónica se aplica por defecto (ver sección 8.1).
+
+## 18. Cómo ejecutar pruebas
+
+**No uses `pytest` para `tests/orchestration/`** (ni para varios archivos
+de `tests/v16/`). Verificado empíricamente: esas suites usan un decorador
+`@scenario` que captura toda excepción internamente sin relanzarla — bajo
+`pytest`, cada función `test_*` se marca `passed` aunque la aserción
+interna haya fallado realmente. El corredor confiable es ejecutar cada
+archivo directamente:
+
+```bash
+for f in tests/orchestration/test_*.py; do python3 "$f" || echo "FALLÓ: $f"; done
+```
+
+Cada archivo imprime `N/N escenarios OK` y termina con código de salida 0
+si todo pasó.
+
+## 19. PREPARE / EXECUTE / COMMIT / RESUME (etapas 03-08)
 
 Cada etapa se ejecuta con el mismo protocolo transaccional
 (`src/state/state_store.py`, `run_stage()` en
 `src/orchestration/pipeline_orchestrator.py`):
 
 1. **PREPARE**: `store.prepare_execution(...)` registra la intención de
-   ejecutar, generando un `decision_id`. Si ya hay una ejecución pendiente
-   sin comprometer, lanza `RuntimeError` — nunca hay dos PREPARE
-   simultáneos sin resolver.
-2. **EXECUTE**: se corre `build_execution` + la lógica real del agente
-   (fuera del `StateStore`).
-3. **Persistencia del resultado**: `store.persist_agent_result(...)` guarda
-   el `AgentResult` en disco antes de comprometerlo — permite recuperarlo
-   si el proceso muere entre EXECUTE y COMMIT.
+   ejecutar. Si ya hay una ejecución pendiente sin comprometer, lanza
+   `RuntimeError`.
+2. **EXECUTE**: se corre `build_execution` + la lógica real del agente.
+3. **Persistencia del resultado**: `store.persist_agent_result(...)`
+   guarda el `AgentResult` en disco antes de comprometerlo.
 4. **COMMIT**: `store.commit_execution(...)` es la única escritura que
-   marca la etapa como `COMPLETED`/`FAILED` en `pipeline_state.json`,
-   junto con sus fingerprints.
-5. **RESUME**: si se vuelve a llamar `run_stage()` sobre una etapa con una
-   ejecución pendiente sin comprometer, `resolve_resume` decide si el
-   resultado ya persistido puede comprometerse directamente (sin
-   reinvocar al agente/LLM) o si hace falta reejecutar.
+   marca la etapa como `COMPLETED`/`FAILED`, junto con sus fingerprints.
+5. **RESUME**: si se reintenta una etapa con una ejecución pendiente sin
+   comprometer, `resolve_resume` decide si el resultado ya persistido
+   puede comprometerse directamente o si hace falta reejecutar.
 
-## 19. Fingerprints y reconstrucción
+## 20. Fingerprints y reconstrucción
 
 `src/state/fingerprints.py` calcula un fingerprint compuesto por etapa a
-partir de tres partes independientes: `input_fingerprint`,
-`config_fingerprint`, `dependencies_fingerprint` (`build_stage_fingerprints`).
-Si cualquiera de las tres cambia, el fingerprint compuesto cambia, y
-`run_stage()` decide reconstruir esa etapa en vez de reutilizar el
-resultado `COMPLETED` anterior (`SKIPPED_FRESH` solo ocurre cuando el
-fingerprint compuesto coincide exactamente). El fingerprint aprobado de 07
-se propaga a 08 como `upstream_fingerprint` en la firma de evaluación
-(`src/adapters/evaluation_fingerprint.py`) — si 07 está comprometido pero
-su fingerprint no existe, falla explícitamente en vez de degradarse a
-`None` en silencio.
+partir de tres partes: `input_fingerprint`, `config_fingerprint`,
+`dependencies_fingerprint`. Si cualquiera cambia, `run_stage()` decide
+reconstruir esa etapa en vez de reutilizar el resultado `COMPLETED`
+anterior (`SKIPPED_FRESH` solo ocurre cuando el fingerprint compuesto
+coincide exactamente).
 
-## 20. Limitaciones actuales
+## 21. Reproducibilidad
 
-- La ruta real de 07/08 (con LLM y Chroma reales) **no se ha ejecutado
-  todavía** en este entorno de desarrollo — toda la migración se validó con
-  dobles deterministas (LLM, retriever, embeddings, BERTScore). El smoke
-  test real en Colab es el primer punto donde se ejercita la integración
-  con red real.
-- El gate determinista de precheck para claims **cuantitativos**
-  (`numeric_risk`) está caracterizado (ver
-  `tests/orchestration/test_verification_numeric_risk_characterization.py`)
-  pero no se investigó su relación completa con el notebook 03B ni se
-  intentó resolver — queda como tarea independiente.
-- 07C permanece en el código por compatibilidad histórica pero no forma
-  parte del registro de etapas activo; su eliminación física es una
-  migración separada.
-
-## 21. Estado de validación
-
-- **468/468** escenarios en 37 suites de `tests/orchestration/`, ejecutados
-  con `python3 archivo.py` (no `pytest`), verificados dos veces: en el
-  entorno de desarrollo y descomprimiendo el ZIP de entrega en un
-  directorio nuevo.
-- El ciclo cualitativo completo `06 → 07 (RETURN) → 06 (REVISION) → 07
-  (ADVANCE)` está probado de punta a punta con código productivo real
-  (`VerificationAgent`, `propose_correction`,
-  `build_provisional_verification_traceability_bundle`,
-  `DraftWritingAgent` en modo `REVISION`), sustituyendo únicamente LLM,
-  Chroma y retriever por dobles deterministas.
-- La etapa 08 completa (métricas automáticas, factuales, LLM Judge,
-  persistencia de los 15 outputs, fingerprints, contrato transaccional,
-  `StageSpec`) está migrada y probada con las mismas sustituciones.
-
-## 22. Advertencia: smoke test real con Chroma y OpenAI
-
-**Nada de lo anterior sustituye una corrida real.** Todas las pruebas de
-este repositorio usan dobles deterministas para LLM, Chroma y retriever —
-ninguna ejercita la integración real de red, autenticación, límites de tasa
-o comportamiento no determinista de un LLM real. El primer punto donde eso
-se valida es el smoke test real descrito en `COLAB_SMOKE_TEST.md`, que debe
-ejecutarse en un entorno con credenciales de OpenAI y una colección Chroma
-real.
-
-## 23. Reproducibilidad
-
-- Todas las funciones puras de `src/tools/` no leen ni escriben archivos ni
+- Las funciones puras de `src/tools/` no leen ni escriben archivos ni
   llaman a red — reciben sus datos de entrada y devuelven estructuras en
-  memoria, lo que las hace deterministas y testeables sin dobles.
+  memoria.
 - `langdetect` fija `DetectorFactory.seed = 0` para detección de idioma
-  determinista (ver `src/tools/evaluation/language_preprocessing.py`).
-- Los fingerprints (sección 19) permiten verificar si una corrida
-  reproduce exactamente las mismas entradas/configuración/dependencias que
-  una corrida previa.
+  determinista.
+- Los fingerprints (sección 20) permiten verificar si una corrida
+  reproduce exactamente las mismas entradas/configuración/dependencias.
 - El componente **no determinista real** es el propio LLM (OpenAI): el
-  pipeline no fija `temperature=0` de forma global ni cachea respuestas de
-  producción; la reproducibilidad exacta del texto generado no está
-  garantizada entre corridas con LLM real.
+  pipeline no fija `temperature=0` de forma global; la reproducibilidad
+  exacta del texto generado no está garantizada entre corridas.
 
-## 24. Relación con la tesis
+## 22. Estado de validación
+
+- Ya existen corridas científicas reales del pipeline completo con
+  OpenAI y Chroma reales (no solo dobles deterministas), incluida al
+  menos una corrida real de regresión ejecutada después de una serie de
+  cambios estructurales sobre el código de las etapas 03/06/07 — sin
+  diferencias de comportamiento observadas en los casos verificados
+  (`INCLUDE`/`EXCLUDE`/`QUARANTINE`, `quality_status`,
+  `requested_transition`, `failure_reason_codes`).
+- El ciclo cualitativo completo `06 → 07 (RETURN) → 06 (REVISION) → 07
+  (ADVANCE)` está probado de punta a punta con código productivo real.
+- La etapa 08 completa (métricas automáticas, factuales, LLM Judge,
+  persistencia de los 15 outputs, fingerprints, contrato transaccional)
+  está migrada y probada.
+
+## 23. Relación con la tesis
 
 Este repositorio es el soporte de implementación de la tesis. El diseño
-multiagente, el ciclo correctivo 06↔07, y las métricas de evaluación de la
-etapa 08 corresponden directamente a los objetivos específicos y la
-metodología descritos en el documento de tesis. Los notebooks operativos
-originales (00-08) son la fuente de referencia científica original de este
-proyecto y no forman parte de este repositorio; este repositorio contiene
-la migración a un sistema transaccional productivo (`StateStore`,
-`StageSpec`, contratos `AgentInput`/`AgentResult`) sobre esa misma base
-científica, sin alterar las decisiones científicas de los notebooks
-originales salvo donde se documenta explícitamente lo contrario (ver
-secciones 6 y 20).
-
-## 25. Evaluación 08: `SUCCESS` / `PARTIAL_HALT`
-
-08 acepta exactamente dos tipos de entrada científica desde 07 — nunca un
-fallo técnico real (`execution_status=FAILED`, errores de runtime/
-contrato/artefactos, que jamás son evaluables):
-
-1. 07 `COMPLETED` + `APPROVED`/`APPROVED_WITH_WARNINGS` + `ADVANCE → 08` →
-   `pipeline_outcome = "SUCCESS"` (`verification_approved=true`,
-   `autonomous_convergence=true`, `human_review_required=false`).
-2. 07 `COMPLETED` + `NEEDS_REVISION` + `HALT_STAGE` por agotamiento
-   científico (ej. `WRITER_VERIFIER_MAX_ROUNDS_EXHAUSTED`, 3/3 rondas
-   usadas sin aprobación completa) → `pipeline_outcome = "PARTIAL_HALT"`
-   (`verification_approved=false`, `autonomous_convergence=false`,
-   `human_review_required=true`, con `rounds_used`/`max_rounds` y el
-   `reason_code` real de 07 registrados).
-
-El segundo camino **nunca se activa automáticamente**: requiere
-`"allow_partial_halt_evaluation": true` explícito en
-`active_experiment.json["evaluation_policy"]`. El `decision_log` de 07
-nunca se reescribe — su entrada sigue diciendo `HALT_STAGE` igual que
-antes; 08 solo decide, como una decisión propia y separada, que ese
-`HALT_STAGE` específico es evaluable bajo el flag explícito. Ver
-`src/adapters/evaluation_pipeline_outcome.py`.
-
-08 lee el draft canónico y sus artefactos usando la misma resolución
-causal que 07 (`resolve_committed_agent06_artifacts`, ver sección 6) —
-nunca una ruta fija — y valida el `source_draft_fingerprint` contra lo que
-07 realmente comprometió, para cualquier draft, incluidos los publicados
-por el bootstrap de identidad. Ground Truth se resuelve **exclusivamente**
-en esta etapa (`src/tools/evaluation/ground_truth.py`); ninguna otra etapa
-(02-07) lee ni recibe contenido de Ground Truth — reforzado con listas de
-rechazo explícitas en varios módulos de `src/tools/` además de la
-validación de política en `src/adapters/verification_orchestrator_runtime.py`.
-07C sigue excluido también aquí (nunca se pasa `agent07c_directory`).
-
-## 26. Módulos de configuración planos en `src/` (duplicación conocida)
-
-`src/config.py`, `src/experiment_config.py`, `src/generation_config.py`,
-`src/rag_policy.py`, `src/rag_utils.py`, `src/llm_utils.py`,
-`src/prompts.py`, `src/pdf_utils.py`, `src/io_utils.py` son módulos
-**planos**, en la raíz de `src/`, que las celdas de los notebooks
-operativos originales (`00_setup_config` y `07_agente_verificador`)
-escriben/leen directamente — **no** forman parte del sistema del
-orquestador (`src/orchestration/`, `src/adapters/`, `src/agents/`,
-`src/tools/`) y ningún módulo de ese sistema los importa. Son dos capas
-de configuración independientes que hoy coinciden (ambas aplican la misma
-política de aislamiento de Ground Truth, por ejemplo) pero que **podrían
-desincronizarse** si una se edita sin la otra. Se conservan porque
-notebooks reales todavía los usan; la fuente de verdad para todo lo que
-ejecuta el orquestador (03→08 vía `StateStore`/`StageSpec`) es siempre
-`active_experiment.json`, nunca estos módulos.
+de dos partes cooperantes (preparación documental 00–02 + pipeline
+transaccional 03–08), el ciclo correctivo 06↔07, y las métricas de
+evaluación de la etapa 08 corresponden directamente a los objetivos
+específicos y la metodología descritos en el documento de tesis.
