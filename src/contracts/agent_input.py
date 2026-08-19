@@ -19,6 +19,17 @@ class ExecutionMode(str, Enum):
     RECLASSIFY_ONLY = "RECLASSIFY_ONLY"
 
 
+# Máximo de intentos por defecto para la comparación "es el intento
+# final" (ver AgentInput.is_final_attempt) -- mismo valor que ya
+# usaban las comparaciones "attempt_number == 2" dispersas en
+# extraction_agent.py/draft_writing_agent.py antes de centralizarlas
+# aquí. Cada etapa puede declarar su propio máximo distinto en su
+# policy y pasarlo explícitamente a is_final_attempt(); este default
+# solo cubre las etapas que, como hoy, no tienen un campo de policy
+# dedicado para su número de intentos.
+DEFAULT_MAX_ATTEMPTS = 2
+
+
 @dataclass(frozen=True, slots=True)
 class ArtifactReference:
     """Referencia inmutable a un artefacto mediante ruta y hash."""
@@ -260,6 +271,32 @@ class AgentInput:
         object.__setattr__(self, "policy", dict(self.policy))
         object.__setattr__(self, "previous_attempt", previous_attempt)
         object.__setattr__(self, "orchestrator_constraints", constraints)
+
+    def is_first_attempt(self) -> bool:
+        """True si esta es la primera vez que el agente ejecuta esta
+        etapa (``attempt_number == 1``). Fuente única de verdad para
+        esta comparación -- evita que cada agente (extraction_agent.py,
+        draft_writing_agent.py, etc.) repita la comparación numérica
+        de forma independiente. Semántica idéntica a la comparación
+        que reemplaza; no introduce ningún cambio de comportamiento."""
+
+        return self.attempt_number == 1
+
+    def is_final_attempt(self, max_attempts: int = DEFAULT_MAX_ATTEMPTS) -> bool:
+        """True si este es el último intento permitido para esta etapa
+        (``attempt_number >= max_attempts``) -- a partir de aquí el
+        agente ya no debe reintentar y debe tomar una decisión
+        definitiva (HALT/REJECTED/APPROVED_PENDING_MANUAL_REVIEW en
+        vez de RETRY). ``max_attempts`` es explícito porque cada etapa
+        declara su propio máximo de intentos en su policy; el default
+        (``DEFAULT_MAX_ATTEMPTS = 2``) es el mismo valor que ya usaban
+        las comparaciones ``attempt_number == 2`` que este método
+        reemplaza -- ni aumenta ni reduce el número de intentos
+        actual. Fuente única de verdad para esta comparación."""
+
+        if not isinstance(max_attempts, int) or isinstance(max_attempts, bool) or max_attempts < 1:
+            raise ValueError("max_attempts debe ser un entero mayor o igual a 1.")
+        return self.attempt_number >= max_attempts
 
     def to_dict(self) -> dict[str, Any]:
         """Serializa el contrato a un diccionario compuesto por tipos básicos."""

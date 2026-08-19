@@ -107,10 +107,10 @@ LEGACY_VERSIONS = {
     # cualquier draft/manifest de 06 producido bajo una versión
     # anterior, sin necesitar --force-rerun.
     "validation_version": "legacy_notebook06_validation_v2_hard_word_range_configured_min_gate_soft_failure_length_repair",
-    # Debe coincidir siempre con LEGACY_RUNTIME_VERSIONS en
-    # src/adapters/draft_writing_runtime.py (duplicación preexistente
-    # de estas constantes entre ambos archivos -- no introducida por
-    # este cambio, pero ambas copias deben mantenerse sincronizadas).
+    # LEGACY_VERSIONS es la fuente canónica única -- src/adapters/
+    # draft_writing_runtime.py ya no define su propia copia; importa
+    # este mismo dict con alias (LEGACY_RUNTIME_VERSIONS). Antes eran
+    # dos copias idénticas mantenidas a mano en paralelo.
     "normalization_version": "sentence_claim_exact_match_preserve_unmatched_v1_immediate_numeric_salvage_v2_discourse_connector_feedback_v3",
 }
 HYBRID_VERSIONS = {
@@ -538,7 +538,7 @@ class DraftWritingAgent:
         }
         action = (
             TransitionAction.RETRY
-            if agent_input.attempt_number == 1
+            if agent_input.is_first_attempt()
             else TransitionAction.HALT_STAGE
         )
         return AgentResult(
@@ -1272,7 +1272,7 @@ class DraftWritingAgent:
                     }
                     action = (
                         TransitionAction.RETRY
-                        if agent_input.attempt_number == 1
+                        if agent_input.is_first_attempt()
                         else TransitionAction.HALT_STAGE
                     )
                     return AgentResult(
@@ -1544,7 +1544,7 @@ class DraftWritingAgent:
 
                 action = (
                     TransitionAction.RETRY
-                    if agent_input.attempt_number == 1
+                    if agent_input.is_first_attempt()
                     else TransitionAction.HALT_STAGE
                 )
                 return AgentResult(

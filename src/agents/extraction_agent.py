@@ -452,7 +452,7 @@ class ExtractionAgent:
             previous_cards_for_attempt2: list[dict[str, Any]] | None = None
             previous_errors_for_attempt2: list[dict[str, Any]] = []
             previous_trace_for_attempt2: list[dict[str, Any]] = []
-            if agent_input.attempt_number == 2:
+            if agent_input.is_final_attempt():
                 previous_cards_path = paths["CARDS_JSONL_PATH"]
                 previous_errors_path = paths["CARDS_ERRORS_CSV_PATH"]
                 previous_trace_path = paths["RETRIEVAL_TRACE_CSV_PATH"]
@@ -507,7 +507,7 @@ class ExtractionAgent:
                     paths["DIR_EXTRACTION"],
                     paths["DIR_KB"],
                 )
-                if agent_input.attempt_number == 1:
+                if agent_input.is_first_attempt():
                     revision_path = paths["CARDS_REVISION_PLAN_CSV_PATH"]
                     if revision_path.exists():
                         revision_path.unlink()
@@ -613,7 +613,7 @@ class ExtractionAgent:
                         self.dependencies.json_parser(raw)
                     )
 
-                if agent_input.attempt_number == 1:
+                if agent_input.is_first_attempt():
                     source_filenames = sorted(
                         str(value)
                         for value in df_chunks_clean["source_filename"].unique()
@@ -1712,103 +1712,20 @@ class ExtractionAgent:
             extraction_policy = dict(
                 signature_policy.get("extraction_policy", {})
             )
-            thresholds = dict(
-                extraction_policy.get("thresholds", {})
-            )
-            approval_threshold = float(
-                dict(thresholds.get("approval", {})).get(
-                    "critical_field_coverage", 0.92
-                )
-            )
-            minimum_usable = float(
-                dict(
-                    thresholds.get(
-                        "minimum_usable_quality", {}
-                    )
-                ).get("critical_field_coverage", 0.80)
-            )
-            reason_codes = self._scientific_reason_codes(
+            reason_codes, can_manual = self._compute_reason_codes_and_manual_review_eligibility(
+                extraction_policy=extraction_policy,
+                coverage=coverage,
                 cards=cards,
-                bad_sources=bad_after_repair,
+                bad_after_repair=bad_after_repair,
                 extraction_errors=extraction_errors,
-            )
-            if coverage < approval_threshold and (
-                "MISSING_CRITICAL_FIELDS" not in reason_codes
-            ):
-                reason_codes = tuple(
-                    dict.fromkeys(
-                        (*reason_codes, "MISSING_CRITICAL_FIELDS")
-                    )
-                )
+            )  # Bloque D, D2 -- extracción mecánica; misma lógica exacta ahora en _compute_reason_codes_and_manual_review_eligibility.
 
-            manual_policy = dict(
-                extraction_policy.get("manual_review_policy", {})
-            )
-            allowed_manual_codes = set(
-                manual_policy.get("allowed_reason_codes", ())
-            )
-            can_manual = (
-                bool(manual_policy.get("allowed", False))
-                and coverage >= minimum_usable
-                and bool(set(reason_codes) & allowed_manual_codes)
-            )
-
-            if reason_codes:
-                # El intento 1 SIEMPRE tiene derecho a un RETRY antes
-                # de cualquier decisión final (HALT/REJECTED/APPROVED_
-                # PENDING_MANUAL_REVIEW) -- histórico: antes de la
-                # pre-eligibilidad documental (FASE 1), el intento 1
-                # NUNCA llegaba hasta aquí con reason_codes de campos
-                # faltantes (siempre retornaba temprano con NEEDS_
-                # REVISION/RETRY, ver el bloque de arriba). Ahora que
-                # el intento 1 SIEMPRE atraviesa este bloque (revision_
-                # rows del camino temprano queda vacío al filtrar
-                # EXCLUDE/QUARANTINE, ver corpus_eligibility.py), este
-                # chequeo restaura exactamente ese comportamiento de
-                # dos intentos para reason_codes que SÍ pueden
-                # repararse con un segundo intento (título ya fue
-                # resuelto en FASE 1 -- solo quedan campos científicos
-                # de fichas ya confirmadas INCLUDE).
-                if agent_input.attempt_number == 1:
-                    quality_status = QualityStatus.NEEDS_REVISION
-                    transition = RequestedTransition(
-                        action=TransitionAction.RETRY,
-                        target_stage=None,
-                        reason_code="NEEDS_REVISION",
-                        requires_human_confirmation=False,
-                    )
-                elif can_manual:
-                    quality_status = (
-                        QualityStatus.APPROVED_PENDING_MANUAL_REVIEW
-                    )
-                    transition = RequestedTransition(
-                        action=TransitionAction.HALT_STAGE,
-                        target_stage=None,
-                        reason_code=(
-                            "APPROVED_PENDING_MANUAL_REVIEW"
-                        ),
-                        requires_human_confirmation=True,
-                    )
-                else:
-                    quality_status = QualityStatus.REJECTED
-                    transition = RequestedTransition(
-                        action=TransitionAction.HALT_STAGE,
-                        target_stage=None,
-                        reason_code="REJECTED",
-                        requires_human_confirmation=False,
-                    )
-            else:
-                quality_status = (
-                    QualityStatus.APPROVED_WITH_WARNINGS
-                    if has_warnings
-                    else QualityStatus.APPROVED
-                )
-                transition = RequestedTransition(
-                    action=TransitionAction.ADVANCE,
-                    target_stage=None,
-                    reason_code="EXTRACTION_COMPLETED",
-                    requires_human_confirmation=False,
-                )
+            quality_status, transition = self._decide_final_quality_status_and_transition(
+                reason_codes=reason_codes,
+                can_manual=can_manual,
+                has_warnings=has_warnings,
+                agent_input=agent_input,
+            )  # Bloque D, D1 -- extracción mecánica; misma lógica exacta ahora en _decide_final_quality_status_and_transition.
 
             return AgentResult(
                 execution_status=ExecutionStatus.COMPLETED,
@@ -1970,6 +1887,147 @@ class ExtractionAgent:
             for row in included_rows
         ]
         return sum(covered) / len(covered)
+
+    @staticmethod
+    def _compute_reason_codes_and_manual_review_eligibility(
+        *,
+        extraction_policy: Mapping[str, Any],
+        coverage: float,
+        cards: Sequence[Mapping[str, Any]],
+        bad_after_repair: Sequence[str],
+        extraction_errors: Sequence[Mapping[str, Any]],
+    ) -> tuple[tuple[str, ...], bool]:
+        """Extracción mecánica (Bloque D, D2) del cálculo de
+        ``reason_codes``/``can_manual`` -- copia EXACTA de la lógica
+        que antes vivía inline en execute(), justo antes de la
+        decisión final (D1, ``_decide_final_quality_status_and_
+        transition``). Ningún cambio de condición, threshold, orden
+        ni reason_code. ``thresholds``/``approval_threshold``/
+        ``minimum_usable``/``manual_policy``/``allowed_manual_codes``
+        son puramente locales a este cálculo -- no se usan en
+        ningún otro punto de execute() (verificado antes de mover).
+        """
+
+        thresholds = dict(
+            extraction_policy.get("thresholds", {})
+        )
+        approval_threshold = float(
+            dict(thresholds.get("approval", {})).get(
+                "critical_field_coverage", 0.92
+            )
+        )
+        minimum_usable = float(
+            dict(
+                thresholds.get(
+                    "minimum_usable_quality", {}
+                )
+            ).get("critical_field_coverage", 0.80)
+        )
+        reason_codes = ExtractionAgent._scientific_reason_codes(
+            cards=cards,
+            bad_sources=bad_after_repair,
+            extraction_errors=extraction_errors,
+        )
+        if coverage < approval_threshold and (
+            "MISSING_CRITICAL_FIELDS" not in reason_codes
+        ):
+            reason_codes = tuple(
+                dict.fromkeys(
+                    (*reason_codes, "MISSING_CRITICAL_FIELDS")
+                )
+            )
+
+        manual_policy = dict(
+            extraction_policy.get("manual_review_policy", {})
+        )
+        allowed_manual_codes = set(
+            manual_policy.get("allowed_reason_codes", ())
+        )
+        can_manual = (
+            bool(manual_policy.get("allowed", False))
+            and coverage >= minimum_usable
+            and bool(set(reason_codes) & allowed_manual_codes)
+        )
+
+        return reason_codes, can_manual
+
+    @staticmethod
+    def _decide_final_quality_status_and_transition(
+        *,
+        reason_codes: tuple[str, ...],
+        can_manual: bool,
+        has_warnings: bool,
+        agent_input: AgentInput,
+    ) -> tuple[QualityStatus, RequestedTransition]:
+        """Extracción mecánica (Bloque D, D1) de la decisión final
+        RETRY/HALT/APPROVED -- copia EXACTA de la lógica que antes
+        vivía inline en execute(), sin ningún cambio de condición,
+        orden, reason_code ni mensaje. ``has_warnings`` se agrega
+        como cuarto parámetro (no estaba en la especificación
+        original de entrada: reason_codes/can_manual/agent_input)
+        porque la rama sin reason_codes lo necesita para decidir
+        entre APPROVED_WITH_WARNINGS y APPROVED -- omitirlo habría
+        sido un cambio de comportamiento, no una extracción mecánica.
+        """
+
+        if reason_codes:
+            # El intento 1 SIEMPRE tiene derecho a un RETRY antes
+            # de cualquier decisión final (HALT/REJECTED/APPROVED_
+            # PENDING_MANUAL_REVIEW) -- histórico: antes de la
+            # pre-eligibilidad documental (FASE 1), el intento 1
+            # NUNCA llegaba hasta aquí con reason_codes de campos
+            # faltantes (siempre retornaba temprano con NEEDS_
+            # REVISION/RETRY, ver el bloque de arriba). Ahora que
+            # el intento 1 SIEMPRE atraviesa este bloque (revision_
+            # rows del camino temprano queda vacío al filtrar
+            # EXCLUDE/QUARANTINE, ver corpus_eligibility.py), este
+            # chequeo restaura exactamente ese comportamiento de
+            # dos intentos para reason_codes que SÍ pueden
+            # repararse con un segundo intento (título ya fue
+            # resuelto en FASE 1 -- solo quedan campos científicos
+            # de fichas ya confirmadas INCLUDE).
+            if agent_input.is_first_attempt():
+                quality_status = QualityStatus.NEEDS_REVISION
+                transition = RequestedTransition(
+                    action=TransitionAction.RETRY,
+                    target_stage=None,
+                    reason_code="NEEDS_REVISION",
+                    requires_human_confirmation=False,
+                )
+            elif can_manual:
+                quality_status = (
+                    QualityStatus.APPROVED_PENDING_MANUAL_REVIEW
+                )
+                transition = RequestedTransition(
+                    action=TransitionAction.HALT_STAGE,
+                    target_stage=None,
+                    reason_code=(
+                        "APPROVED_PENDING_MANUAL_REVIEW"
+                    ),
+                    requires_human_confirmation=True,
+                )
+            else:
+                quality_status = QualityStatus.REJECTED
+                transition = RequestedTransition(
+                    action=TransitionAction.HALT_STAGE,
+                    target_stage=None,
+                    reason_code="REJECTED",
+                    requires_human_confirmation=False,
+                )
+        else:
+            quality_status = (
+                QualityStatus.APPROVED_WITH_WARNINGS
+                if has_warnings
+                else QualityStatus.APPROVED
+            )
+            transition = RequestedTransition(
+                action=TransitionAction.ADVANCE,
+                target_stage=None,
+                reason_code="EXTRACTION_COMPLETED",
+                requires_human_confirmation=False,
+            )
+
+        return quality_status, transition
 
     @staticmethod
     def _scientific_reason_codes(

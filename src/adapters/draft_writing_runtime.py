@@ -8,7 +8,9 @@ from typing import Any, Mapping
 
 from src.agents.draft_writing_agent import (
     CANONICAL_SENTENCES_DRAFT_REPRESENTATION_CONTRACT,
+    HYBRID_VERSIONS as HYBRID_RUNTIME_VERSIONS,
     LEGACY_DRAFT_REPRESENTATION_CONTRACT,
+    LEGACY_VERSIONS as LEGACY_RUNTIME_VERSIONS,
     DraftWritingAgent,
 )
 from src.config.draft_writing_policy_config import (
@@ -29,105 +31,13 @@ from src.state.fingerprints import fingerprint_mapping, sha256_file
 from src.utils.json_parsing import parse_json_safely
 
 
-LEGACY_RUNTIME_VERSIONS = {
-    "stage_version": "06_AGENTIC_V16_BEHAVIOR_PRESERVING",
-    "rag_version": "legacy_chroma_then_csv_restricted_v1",
-    # v2 (sufijo "_hard_word_range_configured_min_gate_soft_failure_
-    # length_repair"): el gate de longitud total del borrador cambió de
-    # contrato -- antes, global_length_valid podía aprobarse usando
-    # effective_min_total_words (rebajado silenciosamente por número de
-    # secciones source-free), permitiendo que un borrador muy por
-    # debajo de min_total_words configurado (ej. 1081 con
-    # configured_min=1300) se aprobara. Desde esta versión:
-    # configured_min_total_words/configured_max_total_words (los
-    # valores reales del generation_profile) son el único gate;
-    # incumplir el rango produce reason codes explícitos
-    # (TOTAL_WORD_COUNT_BELOW_MINIMUM/ABOVE_MAXIMUM/INSUFFICIENT_
-    # SUPPORTED_CONTENT_FOR_MIN_LENGTH) en vez de INVALID_DRAFT
-    # genérico, nunca una excepción técnica, y se intenta una
-    # reparación dirigida (src/tools/draft_writing/length_repair.py,
-    # exclusivamente dentro del contrato Evidence Handles V2) antes de
-    # agotar los intentos. Este es un cambio de CONTRATO real -- por
-    # eso participa en el fingerprint (ver _draft_signature) e invalida
-    # cualquier draft/manifest de 06 producido bajo una versión
-    # anterior, sin necesitar --force-rerun.
-    "validation_version": "legacy_notebook06_validation_v2_hard_word_range_configured_min_gate_soft_failure_length_repair",
-    # Contrato de normalización oración<->claim (normalize_generated_
-    # section, src/tools/draft_writing/normalization.py). Se incrementa
-    # explícitamente cada vez que cambia CÓMO se decide preservar/
-    # heredar/descartar una oración -- nunca se infiere de un hash de
-    # archivo. Antes de esta versión: una oración sustantiva sin
-    # correspondencia EXACTA con un claim se BORRABA por completo,
-    # pudiendo vaciar draft_text entero (EMPTY_DRAFT_TEXT). Desde esta
-    # versión: se preserva sin cita inventada, dejando que la
-    # validación reporte el motivo real. Este cambio de CONTRATO
-    # (no solo de implementación) invalida cualquier draft/manifest de
-    # 06 producido bajo una versión anterior -- por eso participa en el
-    # fingerprint (ver _draft_signature) y en la validación de resume
-    # (ver _manifest_versions_match), sin necesitar --force-rerun.
-    #
-    # v2 (sufijo "_immediate_numeric_salvage_v2"): el algoritmo de
-    # ACEPTACIÓN de una sección también cambió -- _salvage_numeric_
-    # only_section ahora se intenta INMEDIATAMENTE tras CADA intento
-    # interno cuya validación falla EXCLUSIVAMENTE por UNSUPPORTED_
-    # NUMERIC_VALUE:*, no solo una vez al final sobre el último intento
-    # (logs[-1]). Un intento intermedio numeric-only-salvageable ya no
-    # se pierde silenciosamente si un intento POSTERIOR vuelve a fallar
-    # con errores mixtos -- una sección que antes terminaba
-    # SECTION_VALIDATION_FAILED ahora puede aceptarse. Mismo criterio
-    # fail-closed heredado sin cambios (_unsupported_numeric_values):
-    # cualquier error de cita/claim/estructura sigue desactivando el
-    # salvage por completo, y nunca se reemplaza/inventa un valor
-    # numérico -- solo se descartan oraciones/claims que lo contienen.
-    #
-    # v3 (sufijo "_discourse_connector_feedback_v3"): dos cambios
-    # observables más, ninguno relaja el matcher exacto ni acepta una
-    # sección desalineada:
-    #   1. build_section_prompt (regla 11) ahora incluye un ejemplo
-    #      positivo/negativo explícito del patrón de fallo real más
-    #      común (conector discursivo inicial omitido en claims[].claim)
-    #      -- el prompt en sí cambió, así que el MISMO input upstream
-    #      puede producir una respuesta distinta del LLM.
-    #   2. detect_claims_missing_leading_discourse_connector (nuevo,
-    #      normalization.py) agrega feedback ESPECÍFICO y accionable a
-    #      previous_errors cuando detecta -- de forma estrictamente
-    #      determinista, sin fuzzy/semantic matching -- que un claim
-    #      desalineado difiere de su oración únicamente por el conector
-    #      discursivo inicial. Nunca cambia validation_ok, nunca hereda
-    #      ni inventa una cita, nunca repara el claim generado: la
-    #      sección sigue rechazándose exactamente igual que antes ante
-    #      el mismo input -- pero el feedback más específico en el
-    #      RETRY puede cambiar qué intento termina siendo aceptado en
-    #      una corrida real, por eso participa en el fingerprint.
-    "normalization_version": "sentence_claim_exact_match_preserve_unmatched_v1_immediate_numeric_salvage_v2_discourse_connector_feedback_v3",
-}
-HYBRID_RUNTIME_VERSIONS = {
-    "stage_version": "06_AGENTIC_V17_HYBRID_QUANTITATIVE_SOURCE_AWARE",
-    "rag_version": "hybrid_chroma_csv_rrf_balanced_v1",
-    "quantitative_selection_version": "confirmed_literal_greedy_coverage_v1",
-    "budget_version": "source_aware_exact_total_v1",
-    # v2 (sufijo "_hard_word_range_configured_min_gate_soft_failure_
-    # length_repair"): el gate de longitud total del borrador cambió de
-    # contrato -- antes, global_length_valid podía aprobarse usando
-    # effective_min_total_words (rebajado silenciosamente por número de
-    # secciones source-free), permitiendo que un borrador muy por
-    # debajo de min_total_words configurado (ej. 1081 con
-    # configured_min=1300) se aprobara. Desde esta versión:
-    # configured_min_total_words/configured_max_total_words (los
-    # valores reales del generation_profile) son el único gate;
-    # incumplir el rango produce reason codes explícitos
-    # (TOTAL_WORD_COUNT_BELOW_MINIMUM/ABOVE_MAXIMUM/INSUFFICIENT_
-    # SUPPORTED_CONTENT_FOR_MIN_LENGTH) en vez de INVALID_DRAFT
-    # genérico, nunca una excepción técnica, y se intenta una
-    # reparación dirigida (src/tools/draft_writing/length_repair.py,
-    # exclusivamente dentro del contrato Evidence Handles V2) antes de
-    # agotar los intentos. Este es un cambio de CONTRATO real -- por
-    # eso participa en el fingerprint (ver _draft_signature) e invalida
-    # cualquier draft/manifest de 06 producido bajo una versión
-    # anterior, sin necesitar --force-rerun.
-    "validation_version": "legacy_notebook06_validation_v2_hard_word_range_configured_min_gate_soft_failure_length_repair",
-    "normalization_version": "sentence_claim_exact_match_preserve_unmatched_v1_immediate_numeric_salvage_v2_discourse_connector_feedback_v3",
-}
+# LEGACY_RUNTIME_VERSIONS / HYBRID_RUNTIME_VERSIONS: fuente
+# canonica unica en src/agents/draft_writing_agent.py (LEGACY_
+# VERSIONS / HYBRID_VERSIONS), importada arriba con alias -- ver
+# ese modulo para los valores y su documentacion completa. Antes
+# de esta unificacion, este archivo definia su propia copia
+# identica (duplicacion documentada como deuda preexistente); ahora
+# agent y runtime consumen exactamente el mismo objeto dict.
 REQUIRED_DRAFT_ARTIFACTS = (
     "state_of_art_draft.json",
     "state_of_art_draft.md",
